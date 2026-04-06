@@ -19,9 +19,12 @@ class CambridgeInvoiceSchema(BaseModel):
     enbridge_qtr_reference: str = Field(
         ..., description='Enbridge quarterly rate reference, e.g. "Q1 2026"'
     )
-    start_date: date
-    end_date: date
-    billing_period: date = Field(
+    start_date: Optional[date] = Field(
+        None,
+        description="Cambridge invoices do not show an explicit start date — user must enter manually",
+    )
+    end_date: Optional[date] = None
+    billing_period: Optional[date] = Field(
         ..., description="First day of the billing month, e.g. 2026-01-01"
     )
     cd: Optional[float] = Field(
@@ -68,7 +71,7 @@ class CambridgeInvoiceSchema(BaseModel):
     def compute_cost_per_m3(self) -> "CambridgeInvoiceSchema":
         if self.cost_per_m3 is None:
             consumption = self.gas_consumption or 0.0
-            if consumption > 0:
+            if consumption > 0 and self.enbridge_invoice_cost_excl_hst:
                 self.cost_per_m3 = round(self.enbridge_invoice_cost_excl_hst / consumption, 7)
             else:
                 self.cost_per_m3 = 0.0
