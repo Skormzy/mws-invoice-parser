@@ -73,13 +73,13 @@ _AUTO_FIELDS = {"id", "created_at"}
 
 def _get_supabase():
     url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    key = os.environ.get("SUPABASE_SERVICE_KEY", "")
     if not url or not key:
         raise HTTPException(
             status_code=503,
             detail=(
                 "Supabase is not configured. "
-                "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables."
+                "Set SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables."
             ),
         )
     from supabase import create_client  # type: ignore[import]
