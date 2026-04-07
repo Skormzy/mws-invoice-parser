@@ -203,7 +203,7 @@ export interface ValidationWarning {
 
 export interface ParseResponse {
   invoice_type: SiteId
-  rows: AnyInvoiceInsert[]
+  rows: Record<string, unknown>[]
   warnings: ValidationWarning[]
   pdf_page_images: string[]  // base64 PNG data URIs, one per PDF page
 }
