@@ -207,7 +207,7 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
   const cols   = SITE_COLS[siteId]
   const groups = SITE_GROUPS[siteId]
   const hasGroups = groups.length > 0
-  // Indices of columns that fall inside any group span (used for row-1 rendering)
+  // Indices of columns inside any group span (used for group-header row rendering)
   const groupedColIndices = new Set(
     groups.flatMap((g) => Array.from({ length: g.colSpan }, (_, j) => g.startIndex + j))
   )
@@ -353,12 +353,6 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
     }
   }
 
-  // Sticky left offset for frozen data cols: checkbox(32px) + actions(~96px) + 112px per prior frozen col
-  const frozenOffset = (colIdx: number): string => {
-    const frozenBefore = cols.slice(0, colIdx).filter((c) => c.frozen).length
-    return `${128 + frozenBefore * 112}px`
-  }
-
   return (
     <div className="flex flex-col" style={{ height: 'calc(100vh - 56px)' }}>
       {/* ── Toolbar ───────────────────────────────────────────── */}
@@ -445,25 +439,25 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
       </div>
 
       {/* ── Table ─────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-x-auto">
         {records.length === 0 && !loading ? (
           <div className="flex items-center justify-center h-48 text-gray-400 text-sm">
             No records found. Upload an invoice to get started.
           </div>
         ) : (
-          <table className="text-xs border-separate border-spacing-0 w-full">
+          <table className="border-collapse w-full text-sm">
             <thead>
               {/*
-               * Row 1 (hasGroups only): group label band.
-               *   - Only cells for Distribution Charges / Other Charges have visible styling.
-               *   - All other cells are transparent with p-0 so they add no height.
-               * Row 2: every column header with uniform bg-blue-700 styling. No rowSpan anywhere.
+               * Row 1 (Elexicon only): group label band.
+               *   bg-indigo-900 with white borders for group spans.
+               *   All other cells: completely empty (p-0, no border, no bg).
+               * Row 2: every column header — uniform bg-blue-600.
+               * No rowSpan. No sticky. No frozen columns.
                */}
               {hasGroups && (
                 <tr>
-                  {/* Fixed-column placeholders — invisible */}
-                  <th className="p-0" />
-                  <th className="p-0" />
+                  <th className="p-0 border-0" />
+                  <th className="p-0 border-0" />
                   {cols.map((col, colIdx) => {
                     const grp = groups.find((g) => g.startIndex === colIdx)
                     if (grp) {
@@ -471,21 +465,21 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                         <th
                           key={col.key}
                           colSpan={grp.colSpan}
-                          className="sticky top-0 z-10 bg-blue-100 text-blue-800 text-xs font-semibold text-center px-2 py-1.5 border-b border-blue-200"
+                          className="bg-indigo-900 text-white text-xs font-semibold text-center px-3 py-1.5 border-2 border-white"
                         >
                           {grp.label}
                         </th>
                       )
                     }
-                    if (groupedColIndices.has(colIdx)) return null  // covered by colSpan above
-                    return <th key={col.key} className="p-0" />
+                    if (groupedColIndices.has(colIdx)) return null
+                    return <th key={col.key} className="p-0 border-0" />
                   })}
                 </tr>
               )}
 
-              {/* Column name row — identical styling on every cell */}
+              {/* Column headers — identical styling on every cell */}
               <tr>
-                <th className={`sticky left-0 z-30 bg-blue-700 text-white border-b border-r border-blue-600 px-3 py-2 text-center font-semibold ${hasGroups ? 'top-7' : 'top-0'}`}>
+                <th className="bg-blue-600 text-white text-xs font-semibold px-2 py-2 border border-blue-500 text-center">
                   <input
                     type="checkbox"
                     checked={selectedIds.size === records.length && records.length > 0}
@@ -497,20 +491,13 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                     title={selectedIds.size === records.length && records.length > 0 ? 'Deselect all' : 'Select all'}
                   />
                 </th>
-                <th className={`sticky left-8 z-30 bg-blue-700 text-white border-b border-r border-blue-600 px-3 py-2 text-center font-semibold whitespace-nowrap ${hasGroups ? 'top-7' : 'top-0'}`}>
+                <th className="bg-blue-600 text-white text-xs font-semibold px-3 py-2 border border-blue-500 text-center whitespace-nowrap">
                   Actions
                 </th>
-                {cols.map((col, colIdx) => (
+                {cols.map((col) => (
                   <th
                     key={col.key}
-                    className={`
-                      sticky bg-blue-700 text-white border-b border-r border-blue-600
-                      px-3 py-2 font-semibold whitespace-nowrap
-                      ${hasGroups ? 'top-7' : 'top-0'}
-                      ${col.frozen ? 'z-30' : 'z-20'}
-                      ${col.rightAlign ? 'text-right' : 'text-left'}
-                    `}
-                    style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
+                    className={`bg-blue-600 text-white text-xs font-semibold px-3 py-2 border border-blue-500 whitespace-nowrap ${col.rightAlign ? 'text-right' : 'text-left'}`}
                   >
                     {col.label}
                   </th>
@@ -525,17 +512,15 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                 const displayRow = isEditing ? editBuffer : record
 
                 return (
-                  // group class enables group-hover on sticky cells for full-row highlight
                   <tr
                     key={id}
-                    className={`group transition-colors ${
+                    className={`hover:bg-blue-50 transition-colors ${
                       isEditing
                         ? 'bg-blue-50 ring-1 ring-blue-300 ring-inset'
-                        : 'odd:bg-white even:bg-gray-50 hover:bg-blue-50'
+                        : 'odd:bg-white even:bg-gray-50'
                     }`}
                   >
-                    {/* Checkbox — bg-inherit picks up tr background including hover/odd/even */}
-                    <td className="sticky left-0 z-10 border-b border-r border-gray-200 text-center px-1 py-1 w-8 min-w-8 bg-inherit">
+                    <td className="px-2 py-2 border border-gray-200 text-center">
                       <input
                         type="checkbox"
                         checked={selectedIds.has(id)}
@@ -550,8 +535,7 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                       />
                     </td>
 
-                    {/* Actions */}
-                    <td className="sticky left-8 z-10 border-b border-r border-gray-200 px-1.5 py-1 bg-inherit">
+                    <td className="px-2 py-2 border border-gray-200">
                       <div className="flex items-center gap-1">
                         {isEditing ? (
                           <>
@@ -580,15 +564,10 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                       </div>
                     </td>
 
-                    {/* Data cells */}
-                    {cols.map((col, colIdx) => (
+                    {cols.map((col) => (
                       <td
                         key={col.key}
-                        className={`
-                          border-b border-r border-gray-200 px-2 py-1 whitespace-nowrap
-                          ${col.frozen ? 'sticky z-10 bg-inherit' : ''}
-                        `}
-                        style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
+                        className={`px-3 py-2 border border-gray-200 whitespace-nowrap ${col.rightAlign ? 'text-right' : 'text-left'}`}
                       >
                         <DashCell
                           col={col}
