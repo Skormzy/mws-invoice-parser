@@ -33,12 +33,17 @@ export default function Navbar({ page, onNavigate, user }: Props) {
       </span>
 
       <div className="flex gap-1">
-        <NavBtn active={page === 'upload'} onClick={() => onNavigate('upload')}>
-          Upload
-        </NavBtn>
-        <NavBtn active={page === 'dashboard'} onClick={() => onNavigate('dashboard')}>
-          Dashboard
-        </NavBtn>
+        {(['upload', 'dashboard'] as const).map((p) => (
+          <button
+            key={p}
+            onClick={() => onNavigate(p)}
+            className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+              page === p ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            {p.charAt(0).toUpperCase() + p.slice(1)}
+          </button>
+        ))}
       </div>
 
       {/* User info + sign out — pushed to the right */}
