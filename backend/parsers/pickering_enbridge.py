@@ -2,8 +2,8 @@
 Pickering Enbridge CNG invoice parser.
 
 PDF format: Kubra Data Transfer / PDFlib — text-extractable, LBA consumer format.
-  Page 1: billing period dates, meter readings, total consumption
-  Page 2: CHARGES FOR NATURAL GAS section (all charge line items)
+  Page 1: billing period dates, meter readings, total consumption, bill/due dates
+  Page 2: CHARGES FOR NATURAL GAS section (all charge line items, HST, totals)
 
 CRITICAL edge cases handled:
   - Two Contract Demand Charge tiers (e.g. "8,000 m³ $3,396.61" + "2,000 m³ $849.15"):
@@ -99,6 +99,22 @@ def parse_pickering_enbridge(
     p1_lines = p1_text.split("\n")
     p2_lines = p2_text.split("\n")
 
+    # ── Page 1: invoice number ("Bill Number 546002577557") ───────
+    invoice_number: Optional[str] = None
+    m = re.search(r"Bill\s+Number\s+(\d+)", p1_text, re.IGNORECASE)
+    if m:
+        invoice_number = m.group(1)
+
+    # ── Page 1: bill date and due date ────────────────────────────
+    bill_date: Optional[date] = None
+    due_date: Optional[date] = None
+    m = re.search(r"Bill\s+Date\s+(\w+ \d+, \d+)", p1_text, re.IGNORECASE)
+    if m:
+        bill_date = _parse_date(m.group(1))
+    m = re.search(r"Due\s+Date\s+(\w+ \d+, \d+)", p1_text, re.IGNORECASE)
+    if m:
+        due_date = _parse_date(m.group(1))
+
     # ── Page 1: billing period dates ──────────────────────────────
     # "Billing Period Oct 08, 2025 - Nov 06, 2025"
     start_date: Optional[date] = None
@@ -148,7 +164,6 @@ def parse_pickering_enbridge(
         ))
 
     # ── CF-to-m³ conversion (derived from meter readings) ────────
-    # formula confirmed from tracker: consumption / ((actual - previous) × 100)
     cf_to_m3_conversion: Optional[float] = None
     if (
         meter_actual is not None
@@ -161,46 +176,44 @@ def parse_pickering_enbridge(
             cf_to_m3_conversion = gas_consumption / (diff * 100)
 
     # ── Page 2: CHARGES FOR NATURAL GAS section ──────────────────
-    # Find the section start; parse charge lines within it.
     in_charges = False
 
     customer_charge: Optional[float] = None
-    cd_volumes: list[int] = []          # m³ values of CD tiers
-    cd_charges: list[float] = []        # $ amounts of CD tiers
-    in_cd_block = False                  # True while reading CD tier lines
+    cd_volumes: list[int] = []
+    cd_charges: list[float] = []
+    in_cd_block = False
     delivery_to_you: Optional[float] = None
     load_balancing: Optional[float] = None
     transportation: Optional[float] = None
     federal_carbon_charge: Optional[float] = None
-    gas_supply_charges: list[float] = []  # accumulated; split periods have 2
-    gas_supply_vols: list[str] = []       # volume strings from "(X m³ @ rate)" lines
+    gas_supply_charges: list[float] = []
+    gas_supply_vols: list[str] = []
     cost_adjustment: Optional[float] = None
     previous_bill_charge: Optional[float] = None
     enbridge_invoice_cost_excl_hst: Optional[float] = None
+    hst_amount: Optional[float] = None
+    total_incl_hst: Optional[float] = None
+    balance_forward: Optional[float] = None
 
     for idx, line in enumerate(p2_lines):
         stripped = line.strip()
         ns = stripped.replace(" ", "")
 
-        # Enter the charges section
         if stripped == "CHARGES FOR NATURAL GAS":
             in_charges = True
             continue
 
         if not in_charges:
+            # Look for "Balance from Previous Bill" before the charges section too
+            if "Balance from Previous Bill" in stripped or "BalancefromPreviousBill" in ns:
+                balance_forward = _last_dollar(line)
             continue
 
-        # Stop at HST line — everything after is totals we don't need
-        if stripped.startswith("HST"):
-            break
-
         # ── Contract Demand Charge block ─────────────────────────
-        # "Contract Demand Charge" header line has no dollar amount
         if "ContractDemandCharge" in ns and not re.search(r"\$[\d]", stripped):
             in_cd_block = True
             continue
 
-        # Lines in CD block look like "8,000 m³ $3,396.61"
         if in_cd_block:
             cd_m = re.match(r"^([\d,]+)\s*m³?\s*\$([\d,\.]+)", stripped)
             if cd_m:
@@ -208,52 +221,51 @@ def parse_pickering_enbridge(
                 cd_charges.append(float(cd_m.group(2).replace(",", "")))
                 continue
             else:
-                in_cd_block = False  # next non-matching line ends the CD block
+                in_cd_block = False
 
-        # ── Customer Charge ───────────────────────────────────────
         if stripped.startswith("Customer Charge"):
             customer_charge = _last_dollar(line)
 
-        # ── Delivery to You ───────────────────────────────────────
         elif stripped.startswith("Delivery to You"):
             delivery_to_you = _last_dollar(line)
 
-        # ── Load Balancing ────────────────────────────────────────
         elif stripped.startswith("Load Balancing"):
             load_balancing = _last_dollar(line)
 
-        # ── Transportation to Enbridge ────────────────────────────
         elif stripped.startswith("Transportation to Enbridge"):
             transportation = _last_dollar(line)
 
-        # ── Federal Carbon Charge (2024 invoices) ────────────────
         elif "Federal Carbon" in stripped or "Carbon Charge" in stripped:
             federal_carbon_charge = _last_dollar(line)
 
-        # ── Gas Supply Charge (one or two lines for split periods) ─
         elif stripped.startswith("Gas Supply Charge"):
             val = _last_dollar(line)
             if val is not None:
                 gas_supply_charges.append(val)
 
-        # ── Volume annotation "(71,896 m³ @ 12.3008¢/m³)" ────────
         elif stripped.startswith("(") and "m³" in stripped and "@" in stripped:
-            # extract volume string for split_volumes field
             vm = re.search(r"\(([\d,]+)\s*m³", stripped)
             if vm:
                 gas_supply_vols.append(vm.group(1))
 
-        # ── Cost Adjustment ───────────────────────────────────────
         elif stripped.startswith("Cost Adjustment"):
             cost_adjustment = _last_dollar(line)
 
-        # ── Previous Bill Charge (mid-2024 invoices) ─────────────
-        elif "Previous Bill" in stripped:
+        elif "Previous Bill" in stripped and "Balance" not in stripped:
             previous_bill_charge = _last_dollar(line)
 
-        # ── Charges for Natural Gas (= total excl HST) ───────────
+        elif "Balance from Previous Bill" in stripped or "BalancefromPreviousBill" in ns:
+            balance_forward = _last_dollar(line)
+
         elif stripped.startswith("Charges for Natural Gas") and "$" in stripped:
             enbridge_invoice_cost_excl_hst = _last_dollar(line)
+
+        # Extract HST — don't break; continue to get total
+        elif stripped.startswith("HST") and hst_amount is None:
+            hst_amount = _last_dollar(line)
+
+        elif "Total Charges for Natural Gas" in stripped and "$" in stripped:
+            total_incl_hst = _last_dollar(line)
 
     # ── Derive CD fields ─────────────────────────────────────────
     if len(cd_charges) == 1:
@@ -278,7 +290,6 @@ def parse_pickering_enbridge(
     if len(gas_supply_charges) >= 2:
         gas_supply_charge_1 = gas_supply_charges[0]
         gas_supply_charge_2 = gas_supply_charges[1]
-        # Split volumes: annotated from the "(vol @ rate)" lines
         if len(gas_supply_vols) >= 2:
             split_volumes = f"{gas_supply_vols[0]} & {gas_supply_vols[1]}"
         else:
@@ -320,6 +331,9 @@ def parse_pickering_enbridge(
             ))
 
     row = PickeringCngInvoiceSchema(
+        invoice_number=invoice_number,
+        bill_date=bill_date,
+        due_date=due_date,
         enbridge_qtr_reference=enbridge_qtr_reference,
         start_date=start_date,
         end_date=end_date,
@@ -342,6 +356,9 @@ def parse_pickering_enbridge(
         cost_adjustment=cost_adjustment,
         previous_bill_charge=previous_bill_charge,
         enbridge_invoice_cost_excl_hst=enbridge_invoice_cost_excl_hst or 0.0,
+        hst_amount=hst_amount,
+        total_incl_hst=total_incl_hst,
+        balance_forward=balance_forward,
         source_pdf_filename=source_filename,
     )
 

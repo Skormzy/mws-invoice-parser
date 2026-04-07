@@ -39,7 +39,6 @@ def _parse_dollar(s: str) -> float:
 
 def _last_dollar(line: str) -> Optional[float]:
     """Return the last dollar amount found in a text line, or None."""
-    # Matches both positive $X,XXX.XX and negative ($X,XXX.XX)
     hits = re.findall(r"\(?\$[\d,]+\.?\d*\)?", line)
     if not hits:
         return None
@@ -49,6 +48,19 @@ def _last_dollar(line: str) -> Optional[float]:
 def _quarter_label(dt: date) -> str:
     """'Q1 2026' etc. — standard Jan-Mar Q1, Apr-Jun Q2, Jul-Sep Q3, Oct-Dec Q4."""
     return f"Q{(dt.month - 1) // 3 + 1} {dt.year}"
+
+
+def _parse_date_rendered(text: str) -> Optional[date]:
+    """Parse 'DateRendered March2,2026' → date."""
+    m = re.search(r"DateRendered\s+(\w+)\s*(\d{1,2}),?\s*(\d{4})", text, re.IGNORECASE)
+    if m:
+        try:
+            return datetime.strptime(
+                f"{m.group(2)} {m.group(1)} {m.group(3)}", "%d %B %Y"
+            ).date()
+        except ValueError:
+            pass
+    return None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -72,8 +84,16 @@ def parse_cambridge(
 
     lines = p1_text.split("\n")
 
+    # ── Invoice number ("Invoice # 1209362") ──────────────────────
+    invoice_number: Optional[str] = None
+    m = re.search(r"Invoice\s*#\s*(\d+)", p1_text, re.IGNORECASE)
+    if not m:
+        # Try no-space version: "InvoiceNo1209362" or "InvoiceNumber1209362"
+        m = re.search(r"Invoice(?:No|Number|#)\s*(\d+)", p1_text.replace(" ", ""), re.IGNORECASE)
+    if m:
+        invoice_number = m.group(1)
+
     # ── Billing period month ("BillingPeriod February2026") ──────
-    # Appears on line like: 'POBox2001,50KeilDriveNorth BillingPeriod February2026'
     billing_period: Optional[date] = None
     m = re.search(r"BillingPeriod\s+(\w+)\s*(\d{4})", p1_text, re.IGNORECASE)
     if m:
@@ -91,16 +111,9 @@ def parse_cambridge(
             severity=ValidationSeverity.WARNING,
         ))
 
-    # ── End date ("DateRendered March2,2026") ────────────────────
-    end_date: Optional[date] = None
-    m = re.search(r"DateRendered\s+(\w+)\s*(\d{1,2}),?\s*(\d{4})", p1_text, re.IGNORECASE)
-    if m:
-        try:
-            end_date = datetime.strptime(
-                f"{m.group(2)} {m.group(1)} {m.group(3)}", "%d %B %Y"
-            ).date()
-        except ValueError:
-            pass
+    # ── Bill date = Date Rendered ("DateRendered March2,2026") ────
+    bill_date: Optional[date] = _parse_date_rendered(p1_text)
+    end_date: Optional[date] = bill_date   # Cambridge end_date is the DateRendered date
 
     if end_date is None:
         warnings.append(ValidationWarning(
@@ -108,6 +121,21 @@ def parse_cambridge(
             message="Could not parse end date from 'Date Rendered' field.",
             severity=ValidationSeverity.WARNING,
         ))
+
+    # ── Due date (late payment effective date) ────────────────────
+    due_date: Optional[date] = None
+    m = re.search(
+        r"(?:LatePayment|EffectiveDate|LateFee|DueDate)\s+(\w+)\s*(\d{1,2}),?\s*(\d{4})",
+        p1_text.replace(" ", ""),
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            due_date = datetime.strptime(
+                f"{m.group(2)} {m.group(1)} {m.group(3)}", "%d %B %Y"
+            ).date()
+        except ValueError:
+            pass
 
     # ── Start date: NOT present on Cambridge PDFs ─────────────────
     warnings.append(ValidationWarning(
@@ -136,10 +164,6 @@ def parse_cambridge(
         ))
 
     # ── Charge line items ─────────────────────────────────────────
-    # Process line by line. Strips spaces from line for keyword matching,
-    # but uses original line for dollar extraction.
-    # GasSupply-Transportation wraps across two lines — handled with lookahead.
-
     cd: Optional[float] = None
     demand_charge: Optional[float] = None
     delivery_charge: Optional[float] = None
@@ -148,14 +172,15 @@ def parse_cambridge(
     gas_supply_transportation: Optional[float] = None
     commodity_fuel_price_adjustment: Optional[float] = None
     enbridge_invoice_cost_excl_hst: Optional[float] = None
+    hst_amount: Optional[float] = None
+    balance_forward: Optional[float] = None
+    late_payment_charge: Optional[float] = None
 
     for idx, line in enumerate(lines):
         ns = line.replace(" ", "")  # no-space version for keyword matching
 
         if "DemandCharge" in ns and ("8,450" in ns or "8450" in ns):
-            # "DemandCharge-First8,450m3ofCD 8,000.0 m3 $0.7995530 * $6,396.42"
             demand_charge = _last_dollar(line)
-            # CD quantity: the number immediately after "ofCD" keyword
             mc = re.search(r"ofCD\s*([\d,\.]+)\s*m3", line, re.IGNORECASE)
             if mc:
                 cd = float(mc.group(1).replace(",", ""))
@@ -163,11 +188,9 @@ def parse_cambridge(
         elif "DeliveryCharge" in ns or (
             "Delivery" in ns and "422" in ns
         ):
-            # "DeliveryCharge-First 422,250m3 16,819.7 m3 $0.0233020 * $391.93"
             delivery_charge = _last_dollar(line)
 
         elif "MonthlyCharge" in ns and "Interruptible" in ns:
-            # "MonthlyCharge-Interruptible $837.79"
             monthly_charge_interruptible = _last_dollar(line)
 
         elif (
@@ -177,13 +200,9 @@ def parse_cambridge(
             and "Price" not in ns
             and "Adjustment" not in ns
         ):
-            # "GasSupply-Commodity 16.819.7 m3 $0.2040370 $3,431.84"
             gas_supply_commodity = _last_dollar(line)
 
         elif "GasSupply-Transportation" in ns:
-            # This charge wraps: the dollar amount is on the NEXT line.
-            # "GasSupply-Transportation"
-            # "16.819.7 m3 $0.0000000 * $0.00"
             val = _last_dollar(line)
             if val is None and idx + 1 < len(lines):
                 val = _last_dollar(lines[idx + 1])
@@ -192,14 +211,21 @@ def parse_cambridge(
         elif "PriceAdjustment" in ns or (
             "Commodity&Fuel" in ns and "Adjustment" in ns
         ):
-            # "GasSupply-Commodity&Fuel-PriceAdjustment 16.819.7 m3 ($0.0117030) * ($196.84)"
             commodity_fuel_price_adjustment = _last_dollar(line)
 
         elif "CurrentMonthChargesSubtotal" in ns:
-            # "CurrentMonthChargesSubtotal^ $10,861.14"
             enbridge_invoice_cost_excl_hst = _last_dollar(line)
 
-    # Fallback: "Total Charges This Month" if subtotal line wasn't found
+        elif "HarmonizedSalesTax" in ns or ("HST" in ns and "%" in ns):
+            hst_amount = _last_dollar(line)
+
+        elif "BalanceForward" in ns:
+            balance_forward = _last_dollar(line)
+
+        elif "LatePaymentCharge" in ns:
+            late_payment_charge = _last_dollar(line)
+
+    # Fallback for cost excl HST
     if enbridge_invoice_cost_excl_hst is None:
         for line in lines:
             if "TotalChargesThisMonth" in line.replace(" ", ""):
@@ -225,6 +251,9 @@ def parse_cambridge(
             ))
 
     row = CambridgeInvoiceSchema(
+        invoice_number=invoice_number,
+        bill_date=bill_date,
+        due_date=due_date,
         enbridge_qtr_reference=enbridge_qtr_reference,
         start_date=None,
         end_date=end_date,
@@ -240,6 +269,9 @@ def parse_cambridge(
         commodity_fuel_price_adjustment=commodity_fuel_price_adjustment,
         miscellaneous_charges=None,
         enbridge_invoice_cost_excl_hst=enbridge_invoice_cost_excl_hst or 0.0,
+        hst_amount=hst_amount,
+        balance_forward=balance_forward,
+        late_payment_charge=late_payment_charge,
         source_pdf_filename=source_filename,
     )
 
