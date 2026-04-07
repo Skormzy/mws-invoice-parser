@@ -1,7 +1,7 @@
 """
 Pydantic schema for Pickering Elexicon electricity invoices.
 
-Matches the "Past Elexicon Bill" Excel tracker (row 2 headers, 24 data columns).
+Matches the "Past Elexicon Bill" Excel tracker (row 2 headers).
 
 Key notes:
 - global_adjuster is a free-text string from the invoice, e.g. "9,552.64kWh@$-0.00292".
@@ -9,23 +9,35 @@ Key notes:
 - global_adjustment_recovery is a negative credit (nullable).
 - interest_overdue_charge is nullable.
 - new_account_setup is nullable (only appears on the first invoice).
+- bill_date and due_date are null (not present on Elexicon invoices).
+- start_date and end_date are parsed from the read_period date range.
 - cost_per_kwh = total_charge_excl_hst_interest / kwh_used
 """
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
 
 class PickeringElexiconInvoiceSchema(BaseModel):
-    # ── Tracker columns (order matches row 2 headers) ──────────────
+    # ── Invoice metadata ────────────────────────────────────────────
+    meter_number: Optional[str] = Field(None, description='Meter number from page 2 consumption table, e.g. "VC00245185"')
+    bill_date: Optional[date] = Field(None, description='Not present on Elexicon invoices — always null')
+    due_date: Optional[date] = Field(None, description='Not present on Elexicon invoices — always null')
+
+    # ── Billing period ──────────────────────────────────────────────
     bill_period: str = Field(..., description='Month name, e.g. "February"')
     read_period: str = Field(..., description='Meter read date range, e.g. "Jan 31 - Feb 28, 2026"')
+    start_date: Optional[date] = Field(None, description='Start of read period (parsed from read_period)')
+    end_date: Optional[date] = Field(None, description='End of read period (parsed from read_period)')
     account_number: str = Field(default="97066317-00")
     service_type: str = Field(default="GS > 50 kW")
     days: Optional[int] = Field(None, description="Days in billing period")
+
+    # ── Consumption ─────────────────────────────────────────────────
     kwh_used: Optional[float] = Field(None, description="Total kWh consumed")
     monthly_demand_kw: Optional[float] = Field(None, description="Monthly demand in kW")
     electricity_rate: Optional[float] = Field(None, description="Electricity rate in $/kWh")
@@ -35,14 +47,10 @@ class PickeringElexiconInvoiceSchema(BaseModel):
     )
 
     # Distribution Charges
-    new_account_setup: Optional[float] = Field(
-        None, description="New Account Setup fee — only on first invoice"
-    )
+    new_account_setup: Optional[float] = Field(None, description="New Account Setup fee — only on first invoice")
     delivery_charge: Optional[float] = Field(None, description="Distribution: Delivery Charge ($)")
     customer_charge: Optional[float] = Field(None, description="Distribution: Customer Charge ($)")
-    interest_overdue_charge: Optional[float] = Field(
-        None, description="Interest on Overdue Amount (nullable)"
-    )
+    interest_overdue_charge: Optional[float] = Field(None, description="Interest on Overdue Amount (nullable)")
 
     # Other Charges
     sss_admin_charge: Optional[float] = None
@@ -51,24 +59,26 @@ class PickeringElexiconInvoiceSchema(BaseModel):
     global_adjustment_recovery: Optional[float] = Field(
         None, description="Global Adjustment Recovery — negative credit (nullable)"
     )
-    transmission_network: Optional[float] = Field(
-        None, description="Transmission Network Charge ($)"
-    )
-    transmission_connection: Optional[float] = Field(
-        None, description="Transmission Connection ($)"
-    )
+    transmission_network: Optional[float] = Field(None, description="Transmission Network Charge ($)")
+    transmission_connection: Optional[float] = Field(None, description="Transmission Connection ($)")
     wholesale_market_services: Optional[float] = None
+
+    # ── HST / totals ────────────────────────────────────────────────
     hst: Optional[float] = Field(None, description="HST ($)")
     total_charge: float = Field(..., description="Total Charge including HST and overdue interest")
     total_charge_excl_hst_interest: Optional[float] = Field(
         None, description="Total Charge excluding HST and overdue interest"
     )
+
+    # ── Calculated ──────────────────────────────────────────────────
     cost_per_kwh: Optional[float] = Field(
         None, description="Calculated: total_charge_excl_hst_interest / kwh_used"
     )
 
     # ── Audit ───────────────────────────────────────────────────────
     source_pdf_filename: Optional[str] = None
+    source_pdf_path: Optional[str] = None
+    notes: Optional[str] = None
 
     @model_validator(mode="after")
     def compute_cost_per_kwh(self) -> "PickeringElexiconInvoiceSchema":

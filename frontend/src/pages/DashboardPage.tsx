@@ -16,9 +16,7 @@ const SITES: SiteId[] = ['cambridge', 'pickering_cng', 'walgreen', 'pickering_el
 
 // ── Site metadata card ──────────────────────────────────────────────
 
-interface SiteCardProps {
-  siteId: SiteId
-}
+interface SiteCardProps { siteId: SiteId }
 
 function SiteCard({ siteId }: SiteCardProps) {
   const [site, setSite] = useState<Record<string, unknown> | null>(null)
@@ -27,9 +25,7 @@ function SiteCard({ siteId }: SiteCardProps) {
   const [showConfirm, setShowConfirm] = useState(false)
 
   useEffect(() => {
-    getSite(siteId)
-      .then(setSite)
-      .catch(() => setSite(null))
+    getSite(siteId).then(setSite).catch(() => setSite(null))
   }, [siteId])
 
   if (!site) return null
@@ -122,9 +118,9 @@ function SiteCard({ siteId }: SiteCardProps) {
         open={showConfirm}
         title={`Update site information for ${SITE_LABELS[siteId]}?`}
         body={
-          changedFields.length > 0 ? (
-            <p>Changed fields: <strong>{changedFields.join(', ')}</strong></p>
-          ) : 'No changes to save.'
+          changedFields.length > 0
+            ? <p>Changed fields: <strong>{changedFields.join(', ')}</strong></p>
+            : 'No changes to save.'
         }
         confirmLabel="Update"
         onConfirm={handleConfirmedSave}
@@ -166,6 +162,21 @@ function DashCell({ col, value, editing, onChange }: CellProps) {
   )
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/** Build tab-separated clipboard text from records + column definitions. */
+function buildClipboardText(cols: ColDef[], records: Record<string, unknown>[]): string {
+  const header = cols.map((c) => c.label).join('\t')
+  const rows = records.map((rec) =>
+    cols.map((c) => {
+      const v = rec[c.key]
+      if (v == null) return ''
+      return fmtCell(v, c.fmt)
+    }).join('\t')
+  )
+  return [header, ...rows].join('\n')
+}
+
 // ── Main dashboard page ─────────────────────────────────────────────
 
 export default function DashboardPage() {
@@ -203,6 +214,7 @@ export default function DashboardPage() {
     }
   }, [siteId, startDate, endDate])
 
+  // Reload whenever site or either date filter changes (dynamic filtering)
   useEffect(() => { void fetchRecords() }, [fetchRecords])
 
   // ── Edit handlers ─────────────────────────────────────────────
@@ -298,7 +310,18 @@ export default function DashboardPage() {
     }
   }
 
-  // Frozen left offset: first frozen col = left-0, second = left-[112px]
+  // ── Copy table to clipboard ───────────────────────────────────
+  const handleCopyTable = async () => {
+    const text = buildClipboardText(cols, records)
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success(`Table copied to clipboard (${records.length} row${records.length !== 1 ? 's' : ''})`)
+    } catch {
+      toast.error('Could not copy to clipboard.')
+    }
+  }
+
+  // Frozen left offset: 40px for actions column, then 112px per frozen col before this one
   const frozenOffset = (colIdx: number): string => {
     const frozenBefore = cols.slice(0, colIdx).filter((c) => c.frozen).length
     return `${frozenBefore * 112}px`
@@ -327,7 +350,7 @@ export default function DashboardPage() {
           ))}
         </div>
 
-        {/* Date range filter */}
+        {/* Date range filter — dynamically re-fetches on change */}
         <div className="flex items-center gap-2 ml-auto">
           <span className="text-xs text-gray-500">From</span>
           <input
@@ -352,6 +375,14 @@ export default function DashboardPage() {
             </button>
           )}
         </div>
+
+        <button
+          onClick={handleCopyTable}
+          disabled={records.length === 0}
+          className="bg-gray-100 hover:bg-gray-200 disabled:opacity-50 text-gray-700 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
+        >
+          ⎘ Copy Table
+        </button>
 
         <button
           onClick={handleExport}
@@ -386,7 +417,6 @@ export default function DashboardPage() {
               {/* Group header row */}
               {hasGroups && (
                 <tr>
-                  {/* Actions col placeholder */}
                   <th className="sticky top-0 z-30 bg-blue-800 border-b border-gray-300 w-24 min-w-24" />
                   {groupSpec.map((seg, i) => (
                     <th
@@ -535,9 +565,9 @@ export default function DashboardPage() {
         open={showEditConfirm}
         title="Update this record?"
         body={
-          changedFields.length > 0 ? (
-            <p>Changed fields: <strong>{changedFields.join(', ')}</strong></p>
-          ) : 'No changes.'
+          changedFields.length > 0
+            ? <p>Changed fields: <strong>{changedFields.join(', ')}</strong></p>
+            : 'No changes.'
         }
         confirmLabel="Update"
         onConfirm={handleConfirmedEdit}

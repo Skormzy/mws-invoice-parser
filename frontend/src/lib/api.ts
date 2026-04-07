@@ -1,4 +1,4 @@
-import type { SiteId } from '../types'
+import type { SiteId, DupCheckResponse } from '../types'
 
 const BASE = (import.meta.env.VITE_API_URL as string).replace(/\/$/, '')
 
@@ -79,6 +79,32 @@ export async function deleteRecord(siteId: SiteId, recordId: string): Promise<vo
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(body.detail ?? 'Delete failed')
   }
+}
+
+// ── Duplicate check ────────────────────────────────────────────────
+export async function checkDuplicate(
+  siteId: SiteId,
+  opts: {
+    invoiceNumber?: string | null
+    endDate?: string | null
+    cost?: number | null
+    readPeriod?: string | null
+    totalCharge?: number | null
+  },
+): Promise<DupCheckResponse> {
+  const params = new URLSearchParams()
+  if (opts.invoiceNumber) params.set('invoice_number', opts.invoiceNumber)
+  if (opts.endDate) params.set('end_date', opts.endDate)
+  if (opts.cost != null) params.set('cost', String(opts.cost))
+  if (opts.readPeriod) params.set('read_period', opts.readPeriod)
+  if (opts.totalCharge != null) params.set('total_charge', String(opts.totalCharge))
+
+  const res = await fetch(`${BASE}/check-duplicate/${siteId}?${params.toString()}`)
+  if (!res.ok) {
+    // Silently return 'none' on error — duplicate check is non-blocking
+    return { duplicate: 'none' }
+  }
+  return res.json()
 }
 
 // ── Sites ──────────────────────────────────────────────────────────

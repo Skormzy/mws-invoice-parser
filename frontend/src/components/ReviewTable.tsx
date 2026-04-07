@@ -10,10 +10,11 @@ interface Props {
   warnings: ValidationWarning[]
   onSave: (rows: Record<string, unknown>[]) => Promise<void>
   onBack: () => void
+  saveDisabled?: boolean  // true when exact duplicate detected
 }
 
 export default function ReviewTable({
-  invoiceType, initialRows, warnings, onSave, onBack,
+  invoiceType, initialRows, warnings, onSave, onBack, saveDisabled = false,
 }: Props) {
   const cols = SITE_COLS[invoiceType]
   const groups = SITE_GROUPS[invoiceType]
@@ -132,10 +133,11 @@ export default function ReviewTable({
         </div>
         <button
           onClick={() => setShowConfirm(true)}
-          disabled={saving}
-          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-5 py-1.5 rounded-lg text-sm font-medium transition-colors"
+          disabled={saving || saveDisabled}
+          title={saveDisabled ? 'Duplicate invoice detected — save disabled' : undefined}
+          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed text-white px-5 py-1.5 rounded-lg text-sm font-medium transition-colors"
         >
-          {saving ? 'Saving…' : 'Save to Database'}
+          {saving ? 'Saving…' : saveDisabled ? 'Save Disabled (Duplicate)' : 'Save to Database'}
         </button>
       </div>
 

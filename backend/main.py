@@ -2,15 +2,16 @@
 MWS Invoice Parser — FastAPI application.
 
 Routes (all mounted at root; Vite proxy strips /api prefix):
-  POST /parse                      — upload PDF, parse, validate, return rows + page images
-  POST /save                       — insert rows into Supabase; upload PDF to Storage
-  GET  /records/{site}             — fetch saved records (asc start_date; optional filters)
-  PUT  /records/{site}/{id}        — update a single record
-  DELETE /records/{site}/{id}      — delete a single record
-  GET  /sites/{site}               — get site metadata
-  PUT  /sites/{site}               — update site metadata
-  GET  /pdf/{site}/{id}            — get signed PDF download URL
-  GET  /export/{site}              — download .xlsx tracker in Melissa's exact format
+  POST /parse                           — upload PDF, parse, validate, return rows + page images
+  POST /save                            — insert rows into Supabase; upload PDF to Storage
+  GET  /records/{site}                  — fetch saved records (asc; optional date filters)
+  PUT  /records/{site}/{id}             — update a single record
+  DELETE /records/{site}/{id}           — delete a single record
+  GET  /check-duplicate/{site}          — check for duplicate by invoice_number or fuzzy match
+  GET  /sites/{site}                    — get site metadata
+  PUT  /sites/{site}                    — update site metadata
+  GET  /pdf/{site}/{id}                 — get signed PDF download URL
+  GET  /export/{site}                   — download .xlsx tracker in Melissa's exact format
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ load_dotenv()
 app = FastAPI(
     title="MWS Invoice Parser API",
     description="Parses Enbridge CNG and Elexicon electricity PDF invoices for Miller Waste Systems.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -60,7 +61,7 @@ _TABLE_MAP = {
     "pickering_elexicon": "pickering_elexicon_invoices",
 }
 
-# Column used for ascending date sort per site
+# Column used for ascending sort per site
 _ORDER_COL = {
     "cambridge": "start_date",
     "pickering_cng": "start_date",
@@ -138,21 +139,25 @@ def _clean_row(row: dict[str, Any], strip_extra: set[str] | None = None) -> dict
 def _upload_pdf(sb, site_id: str, filename: str, content: bytes, rows: list[dict]) -> str:
     """
     Upload the invoice PDF to Supabase Storage.
-    Path: {site_id}/{YYYY-MM}_{filename}
+    Path: {site_id}/{invoice_number_or_YYYY-MM}_{filename}
     Returns the storage path string.
     """
-    # Derive YYYY-MM from first row's start_date (or today as fallback)
     from datetime import date as _date
-    month_prefix: str
     first = rows[0] if rows else {}
-    raw_date = first.get("start_date") or first.get("billing_period")
-    if raw_date and len(str(raw_date)) >= 7:
-        month_prefix = str(raw_date)[:7]
+
+    # Prefer invoice_number in the path for easier identification
+    inv_num = first.get("invoice_number")
+    if inv_num:
+        prefix = str(inv_num)
     else:
-        month_prefix = _date.today().strftime("%Y-%m")
+        raw_date = first.get("start_date") or first.get("billing_period")
+        if raw_date and len(str(raw_date)) >= 7:
+            prefix = str(raw_date)[:7]
+        else:
+            prefix = _date.today().strftime("%Y-%m")
 
     safe_name = filename.replace(" ", "_")
-    path = f"{site_id}/{month_prefix}_{safe_name}"
+    path = f"{site_id}/{prefix}_{safe_name}"
 
     try:
         sb.storage.from_(_STORAGE_BUCKET).upload(
@@ -161,7 +166,6 @@ def _upload_pdf(sb, site_id: str, filename: str, content: bytes, rows: list[dict
             {"content-type": "application/pdf", "upsert": "true"},
         )
     except Exception as exc:
-        # Log but don't fail the save — PDF upload is best-effort
         print(f"[WARN] PDF upload failed: {exc}")
         return ""
 
@@ -295,11 +299,11 @@ async def get_records(
     limit: Optional[int] = None,
 ):
     """
-    Return saved records for a site, oldest first (ascending).
+    Return saved records for a site, oldest first (ascending by order column).
 
-    Query params (all optional):
-      start_date — ISO date lower bound on the ordering column
-      end_date   — ISO date upper bound
+    Date filter params apply to start_date / end_date columns (not the sort column):
+      start_date — records where start_date >= this value
+      end_date   — records where end_date <= this value
       limit      — maximum number of records to return
     """
     table = _TABLE_MAP.get(site_id)
@@ -311,9 +315,9 @@ async def get_records(
 
     query = sb.table(table).select("*").order(order_col, desc=False)
     if start_date:
-        query = query.gte(order_col, start_date)
+        query = query.gte("start_date", start_date)
     if end_date:
-        query = query.lte(order_col, end_date)
+        query = query.lte("end_date", end_date)
     if limit:
         query = query.limit(limit)
 
@@ -358,6 +362,88 @@ async def delete_record(site_id: str, record_id: str):
         return {"success": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ── Duplicate Check ────────────────────────────────────────────
+
+@app.get("/check-duplicate/{site_id}")
+async def check_duplicate(
+    site_id: str,
+    invoice_number: Optional[str] = None,
+    end_date: Optional[str] = None,
+    cost: Optional[float] = None,
+    read_period: Optional[str] = None,
+    total_charge: Optional[float] = None,
+):
+    """
+    Check whether a record with the given invoice details already exists.
+
+    Step 1 (exact): if invoice_number is provided, match on that field.
+    Step 2 (fuzzy): if no invoice_number, try:
+      - Enbridge sites: end_date + enbridge_invoice_cost_excl_hst within $0.01
+      - Elexicon: read_period + total_charge within $0.01
+
+    Returns:
+      { "duplicate": "none" }
+      { "duplicate": "exact", "existing": {...} }
+      { "duplicate": "fuzzy", "existing": {...} }
+    """
+    table = _TABLE_MAP.get(site_id)
+    if not table:
+        raise HTTPException(status_code=400, detail=f"Unknown site_id: {site_id!r}")
+
+    sb = _get_supabase()
+
+    # ── Step 1: invoice number exact match ──────────────────────────
+    if invoice_number:
+        try:
+            resp = (
+                sb.table(table)
+                .select("*")
+                .eq("invoice_number", invoice_number)
+                .limit(1)
+                .execute()
+            )
+            if resp.data:
+                return {"duplicate": "exact", "existing": resp.data[0]}
+        except Exception:
+            pass  # field may not exist for this site; fall through to fuzzy
+
+    # ── Step 2: fuzzy match ─────────────────────────────────────────
+    if site_id == "pickering_elexicon":
+        # Match on read_period + total_charge within $0.01
+        if read_period and total_charge is not None:
+            try:
+                resp = (
+                    sb.table(table)
+                    .select("*")
+                    .eq("read_period", read_period)
+                    .execute()
+                )
+                for rec in (resp.data or []):
+                    db_charge = rec.get("total_charge")
+                    if db_charge is not None and abs(float(db_charge) - total_charge) <= 0.01:
+                        return {"duplicate": "fuzzy", "existing": rec}
+            except Exception:
+                pass
+    else:
+        # Enbridge sites: match on end_date + enbridge_invoice_cost_excl_hst within $0.01
+        if end_date and cost is not None:
+            try:
+                resp = (
+                    sb.table(table)
+                    .select("*")
+                    .eq("end_date", end_date)
+                    .execute()
+                )
+                for rec in (resp.data or []):
+                    db_cost = rec.get("enbridge_invoice_cost_excl_hst")
+                    if db_cost is not None and abs(float(db_cost) - cost) <= 0.01:
+                        return {"duplicate": "fuzzy", "existing": rec}
+            except Exception:
+                pass
+
+    return {"duplicate": "none"}
 
 
 # ── Sites ─────────────────────────────────────────────────────
@@ -405,7 +491,6 @@ async def get_pdf_url(site_id: str, record_id: str):
 
     sb = _get_supabase()
 
-    # Fetch the record to get source_pdf_path
     try:
         response = sb.table(table).select("source_pdf_path").eq("id", record_id).single().execute()
         pdf_path = (response.data or {}).get("source_pdf_path")

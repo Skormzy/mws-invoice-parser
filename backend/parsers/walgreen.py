@@ -3,22 +3,19 @@ Walgreen Enbridge CNG invoice parser.
 
 PDF format: SCANNED — zero extractable text.
   - Convert each page to JPEG using pdf2image (requires poppler-utils).
-  - Send each page image to Anthropic Claude vision API to extract charge data.
-  - Skip page 1 (summary page — no detailed charges).
+  - Page 1 (summary): extract invoice-level fields (invoice_number, bill_date, due_date,
+    hst_amount, total_incl_hst) using Claude vision.
   - Pages 2–N contain rate sections (Rate 110 and Rate 145) for each billing period.
 
 CRITICAL RULES:
   - Every billing period produces TWO WalgreenInvoiceSchema rows: rate=110 and rate=145.
   - Rate 145 rows always have 0 gas consumption.
-  - Cross-quarter periods produce dual CD and dual gas/demand charge fields.
-  - enbridge_qtr_reference derived from start_date/end_date.
+  - hst_amount and total_incl_hst: stored only on the first Rate 110 row; null on all others.
+  - invoice_number, bill_date, due_date: same for all rows from one invoice.
 
 ENVIRONMENT REQUIREMENTS:
   - ANTHROPIC_API_KEY environment variable must be set.
-  - poppler-utils must be installed (for pdf2image):
-      Debian/Ubuntu: apt-get install -y poppler-utils
-      macOS:         brew install poppler
-      Docker:        see backend/Dockerfile
+  - poppler-utils must be installed (for pdf2image).
 """
 
 from __future__ import annotations
@@ -46,6 +43,27 @@ SYSTEM_PROMPT = (
     "You are a precise invoice data extractor. "
     "Return ONLY valid JSON with no markdown formatting, no backticks, no explanation."
 )
+
+# Prompt for page 1 (summary / account info page)
+PAGE1_PROMPT = """This is page 1 of a scanned Enbridge CNG invoice for the Walgreen site.
+It is a summary/account overview page. Extract these invoice-level fields:
+
+{
+  "invoice_number": "string or null",
+  "bill_date": "YYYY-MM-DD or null",
+  "due_date": "YYYY-MM-DD or null",
+  "hst_amount": number or null,
+  "total_amount_due": number or null
+}
+
+Field notes:
+- invoice_number: look for "Bill Number" value
+- bill_date: look for "Bill Date" value
+- due_date: look for "Due Date" value
+- hst_amount: look for "HST" charge amount
+- total_amount_due: look for "Total Amount Due" or "Total Charges"
+
+Return ONLY the JSON object — no other text."""
 
 PAGE_PROMPT = """This is a page from a scanned Enbridge CNG gas invoice for the Walgreen site.
 
@@ -119,10 +137,59 @@ def _quarter_label(start: date, end: date) -> str:
 
 
 def _jpeg_to_base64(img) -> str:
-    """Convert a PIL Image to a base64-encoded JPEG string."""
     buf = BytesIO()
     img.save(buf, format="JPEG", quality=90)
     return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _call_claude(client: anthropic.Anthropic, b64_image: str, prompt: str) -> str:
+    """Call Claude vision with a single image and prompt. Returns raw text."""
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        system=SYSTEM_PROMPT,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": b64_image,
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+    )
+    raw = response.content[0].text.strip()
+    # Strip accidental markdown fences
+    raw = re.sub(r"^```[a-z]*\n?", "", raw)
+    raw = re.sub(r"\n?```$", "", raw)
+    return raw
+
+
+def _extract_invoice_fields(
+    client: anthropic.Anthropic,
+    b64_image: str,
+    warnings: list[ValidationWarning],
+) -> dict:
+    """Extract invoice-level fields from page 1. Returns dict (empty on failure)."""
+    try:
+        raw = _call_claude(client, b64_image, PAGE1_PROMPT)
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception as exc:
+        warnings.append(ValidationWarning(
+            field=None,
+            message=f"Page 1: Could not extract invoice fields — {exc}",
+            severity=ValidationSeverity.WARNING,
+        ))
+    return {}
 
 
 def _extract_sections_from_page(
@@ -131,35 +198,13 @@ def _extract_sections_from_page(
     page_num: int,
     warnings: list[ValidationWarning],
 ) -> list[dict]:
-    """
-    Send one page image to Claude and return the parsed list of rate section dicts.
-    Returns [] on failure (with a warning appended).
-    """
+    """Send one page image to Claude and return the parsed list of rate section dicts."""
     try:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=2048,
-            system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/jpeg",
-                                "data": b64_image,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": PAGE_PROMPT,
-                        },
-                    ],
-                }
-            ],
-        )
+        raw = _call_claude(client, b64_image, PAGE_PROMPT)
+        sections = json.loads(raw)
+        if not isinstance(sections, list):
+            raise ValueError("Expected a JSON array")
+        return sections
     except anthropic.APIError as exc:
         warnings.append(ValidationWarning(
             field=None,
@@ -167,32 +212,16 @@ def _extract_sections_from_page(
             severity=ValidationSeverity.ERROR,
         ))
         return []
-
-    raw_text = response.content[0].text.strip()
-
-    # Strip accidental markdown fences
-    raw_text = re.sub(r"^```[a-z]*\n?", "", raw_text)
-    raw_text = re.sub(r"\n?```$", "", raw_text)
-
-    try:
-        sections = json.loads(raw_text)
-        if not isinstance(sections, list):
-            raise ValueError("Expected a JSON array")
-        return sections
     except (json.JSONDecodeError, ValueError) as exc:
         warnings.append(ValidationWarning(
             field=None,
-            message=(
-                f"Page {page_num}: Claude returned non-JSON response — {exc}. "
-                f"Raw: {raw_text[:300]}"
-            ),
+            message=f"Page {page_num}: Claude returned non-JSON response — {exc}",
             severity=ValidationSeverity.ERROR,
         ))
         return []
 
 
 def _safe_float(val) -> Optional[float]:
-    """Coerce a value to float, returning None on failure."""
     if val is None:
         return None
     try:
@@ -220,44 +249,41 @@ def parse_walgreen(
 ) -> tuple[list[WalgreenInvoiceSchema], list[ValidationWarning]]:
     """
     Parse a Walgreen Enbridge CNG invoice PDF (scanned — no extractable text).
-
-    Requires:
-      - ANTHROPIC_API_KEY env var
-      - poppler-utils installed (for pdf2image)
-
-    Returns:
-        (rows, warnings)
-        rows — one WalgreenInvoiceSchema per rate-section (typically 2 per billing period).
     """
-    # Defer pdf2image import so the rest of the codebase works without poppler
     try:
         from pdf2image import convert_from_path  # type: ignore[import]
     except ImportError as exc:
         raise RuntimeError(
-            "pdf2image is not installed or poppler-utils is missing. "
-            "Install with: pip install pdf2image  AND  apt-get install poppler-utils"
+            "pdf2image is not installed or poppler-utils is missing."
         ) from exc
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY environment variable is not set. "
-            "Export it before running the Walgreen parser."
-        )
+        raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
 
     warnings: list[ValidationWarning] = []
     client = anthropic.Anthropic(api_key=api_key)
 
-    # ── Convert PDF pages to images ───────────────────────────────────
-    # DPI 200 gives good legibility while keeping image size manageable.
     images = convert_from_path(pdf_path, dpi=200)
 
-    # ── Collect rate sections from pages 2–N (skip page 1 = summary) ──
+    # ── Page 1: extract invoice-level fields ──────────────────────
+    invoice_fields: dict = {}
+    if images:
+        b64_p1 = _jpeg_to_base64(images[0])
+        invoice_fields = _extract_invoice_fields(client, b64_p1, warnings)
+
+    invoice_number: Optional[str] = invoice_fields.get("invoice_number") or None
+    bill_date: Optional[date] = _parse_date(str(invoice_fields.get("bill_date") or ""))
+    due_date: Optional[date] = _parse_date(str(invoice_fields.get("due_date") or ""))
+    hst_amount: Optional[float] = _safe_float(invoice_fields.get("hst_amount"))
+    total_amount_due: Optional[float] = _safe_float(invoice_fields.get("total_amount_due"))
+
+    # ── Pages 2–N: collect rate sections ─────────────────────────
     all_sections: list[dict] = []
     for page_idx, img in enumerate(images):
         page_num = page_idx + 1
         if page_num == 1:
-            continue  # summary page — no charge detail
+            continue  # summary page — charge detail on pages 2+
 
         b64 = _jpeg_to_base64(img)
         sections = _extract_sections_from_page(client, b64, page_num, warnings)
@@ -271,7 +297,7 @@ def parse_walgreen(
         ))
         return [], warnings
 
-    # ── Build WalgreenInvoiceSchema rows from extracted dicts ──────────
+    # ── Build WalgreenInvoiceSchema rows ──────────────────────────
     rows: list[WalgreenInvoiceSchema] = []
     for row_idx, sec in enumerate(all_sections):
         start_date = _parse_date(str(sec.get("start_date", "")))
@@ -316,6 +342,9 @@ def parse_walgreen(
             cost_excl_hst = 0.0
 
         row = WalgreenInvoiceSchema(
+            invoice_number=invoice_number,
+            bill_date=bill_date,
+            due_date=due_date,
             enbridge_qtr_reference=enbridge_qtr_reference,
             rate=rate_raw,
             start_date=start_date,
@@ -336,11 +365,21 @@ def parse_walgreen(
             gas_supply_commodity_2=_safe_float(sec.get("gas_supply_commodity_2")),
             cost_adjustment=_safe_float(sec.get("cost_adjustment")),
             enbridge_invoice_cost_excl_hst=cost_excl_hst,
+            # hst_amount and total_incl_hst: only on first Rate 110 row
+            hst_amount=None,
+            total_incl_hst=None,
             source_pdf_filename=source_filename,
         )
         rows.append(row)
 
-    # ── Sort by start_date then rate for deterministic ordering ────────
+    # Sort by start_date then rate for deterministic ordering
     rows.sort(key=lambda r: (r.start_date, r.rate))
+
+    # Stamp hst_amount and total_incl_hst on the first Rate 110 row only
+    for row in rows:
+        if row.rate == 110:
+            row.hst_amount = hst_amount
+            row.total_incl_hst = total_amount_due
+            break
 
     return rows, warnings

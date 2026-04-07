@@ -12,13 +12,15 @@ Key quirks:
     'Disposition of Global Adjustment' is the separate positive adjustment.
   - Electricity rate $/kWh appears in the 'Electricity' line as "$0.123796/kWh".
   - bill_period (month name) is derived from the read period end date.
-  - All consumption data (kWh, demand, days) comes from the page 2 data row.
+  - start_date and end_date are parsed from the read_period date range.
+  - bill_date and due_date are not present on Elexicon invoices (always null).
+  - All consumption data (kWh, demand, days, meter_number) comes from the page 2 data row.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 import pdfplumber
@@ -59,10 +61,38 @@ def _month_name(date_str: str) -> Optional[str]:
     if m:
         try:
             dt = datetime.strptime(f"1 {m.group(1)} {m.group(2)}", "%d %b %Y")
-            return dt.strftime("%B")   # full month name
+            return dt.strftime("%B")
         except ValueError:
             pass
     return None
+
+
+def _parse_read_period_dates(period_str: str) -> tuple[Optional[date], Optional[date]]:
+    """
+    Parse 'Jan 31 - Feb 28, 2026' into (start_date, end_date).
+    The year applies to both dates; if start month > end month, start year = end year - 1
+    only when crossing a year boundary (e.g. Dec → Jan).
+    """
+    m = re.match(
+        r"(\w+)\s+(\d+)\s*-\s*(\w+)\s+(\d+),?\s*(\d{4})",
+        period_str.strip(),
+    )
+    if not m:
+        return None, None
+    start_mon, start_day, end_mon, end_day, year_str = m.groups()
+    year = int(year_str)
+    try:
+        end_date = datetime.strptime(f"{end_day} {end_mon} {year}", "%d %b %Y").date()
+        # Determine start year (handles Dec→Jan crossover)
+        start_date_try = datetime.strptime(f"{start_day} {start_mon} {year}", "%d %b %Y").date()
+        if start_date_try > end_date:
+            # e.g. Dec 1, 2025 → Jan 31, 2026 — start year is end_year - 1
+            start_date = datetime.strptime(f"{start_day} {start_mon} {year - 1}", "%d %b %Y").date()
+        else:
+            start_date = start_date_try
+        return start_date, end_date
+    except ValueError:
+        return None, None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -88,10 +118,10 @@ def parse_elexicon(
     p1_lines = p1_text.split("\n")
 
     # ── Read period & bill period ─────────────────────────────────
-    # Line 14 (0-indexed): 'Jan 31 - Feb 28, 2026'
-    # Preceded by 'READ PERIOD:' on line 12.
     read_period: Optional[str] = None
     bill_period: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
 
     read_period_next = False
     for line in p1_lines:
@@ -102,6 +132,7 @@ def parse_elexicon(
         if read_period_next and re.search(r"\w+ \d+ - \w+ \d+", stripped):
             read_period = stripped
             bill_period = _month_name(stripped)
+            start_date, end_date = _parse_read_period_dates(stripped)
             read_period_next = False
             break
 
@@ -113,7 +144,6 @@ def parse_elexicon(
         ))
 
     # ── Page 2: consumption data row ─────────────────────────────
-    # Line 4: 'VC00245185 Jan 31 - Feb 28, 2026 28 28,193.70 253.00 0.84 142.01 0.82'
     days: Optional[int] = None
     kwh_used: Optional[float] = None
     monthly_demand_kw: Optional[float] = None
@@ -121,14 +151,12 @@ def parse_elexicon(
 
     p2_lines = p2_text.split("\n")
     for line in p2_lines:
-        # The data row starts with a meter number (alphanumeric, no spaces) followed by
-        # a billing period date range and numeric values.
         m = re.match(
-            r"^(\w+)\s+"                        # meter number
+            r"^(\w+)\s+"                         # meter number
             r"(\w+ \d+ - \w+ \d+,\s*\d{4})\s+"  # billing period
-            r"(\d+)\s+"                          # days
-            r"([\d,\.]+)\s+"                     # kWh used
-            r"([\d\.]+)",                        # monthly demand kW
+            r"(\d+)\s+"                           # days
+            r"([\d,\.]+)\s+"                      # kWh used
+            r"([\d\.]+)",                         # monthly demand kW
             line.strip(),
         )
         if m:
@@ -146,10 +174,6 @@ def parse_elexicon(
         ))
 
     # ── Page 1: charge line items ─────────────────────────────────
-    # Process lines by label prefix. The two-column interleaving means some lines
-    # have right-column text appended, but _last_dollar() always gets the correct
-    # charge amount (last $ on the line).
-
     electricity_rate: Optional[float] = None
     delivery_charge: Optional[float] = None
     customer_charge: Optional[float] = None
@@ -157,7 +181,7 @@ def parse_elexicon(
     electricity_cost: Optional[float] = None
     global_adjuster: Optional[str] = None
     global_adjustment_recovery: Optional[float] = None
-    global_adjustment: Optional[float] = None   # "Disposition of Global Adjustment"
+    global_adjustment: Optional[float] = None
     transmission_network: Optional[float] = None
     transmission_connection: Optional[float] = None
     wholesale_market_services: Optional[float] = None
@@ -170,11 +194,9 @@ def parse_elexicon(
         stripped = line.strip()
 
         if stripped.startswith("Delivery Charge"):
-            # "Delivery Charge $5.3901/kW $1,363.70 Miller Waste Systems Inc"
             delivery_charge = _last_dollar(line)
 
         elif stripped.startswith("Customer Charge"):
-            # "Customer Charge $138.41 SERVICE ADDRESS:"
             customer_charge = _last_dollar(line)
 
         elif stripped.startswith("New Account Setup") or "New Account" in stripped:
@@ -184,15 +206,12 @@ def parse_elexicon(
             sss_admin_charge = _last_dollar(line)
 
         elif stripped.startswith("Electricity ") and "/kWh" in stripped:
-            # "Electricity $0.123796/kWh $3,658.50"
             electricity_cost = _last_dollar(line)
             rm = re.search(r"\$([\d\.]+)/kWh", stripped)
             if rm:
                 electricity_rate = float(rm.group(1))
 
         elif stripped.startswith("Global Adjustment") and "Disposition" not in stripped:
-            # "Global Adjustment 29,552.64kWh@$-0.00292 -$86.30"
-            # Extract the descriptor text between the label and the final $ amount.
             global_adjustment_recovery = _last_dollar(line)
             dm = re.search(
                 r"Global Adjustment\s+([\d,\.]+kWh@\$[\d\.\-]+)",
@@ -203,7 +222,6 @@ def parse_elexicon(
                 global_adjuster = dm.group(1)
 
         elif "Disposition of Global Adjustment" in stripped:
-            # "Disposition of Global Adjustment $279.12"
             global_adjustment = _last_dollar(line)
 
         elif stripped.startswith("Transmission Network"):
@@ -225,7 +243,6 @@ def parse_elexicon(
             interest_overdue_charge = _last_dollar(line)
 
     # ── Derived fields ────────────────────────────────────────────
-    # total_charge_excl_hst_interest = total_charge - hst - interest_overdue_charge
     total_charge_excl_hst_interest: Optional[float] = None
     if total_charge is not None and hst is not None:
         excl = total_charge - hst
@@ -254,8 +271,13 @@ def parse_elexicon(
             ))
 
     row = PickeringElexiconInvoiceSchema(
+        meter_number=meter_number,
+        bill_date=None,
+        due_date=None,
         bill_period=bill_period or "",
         read_period=read_period or "",
+        start_date=start_date,
+        end_date=end_date,
         account_number="97066317-00",
         service_type="GS > 50 kW",
         days=days,
