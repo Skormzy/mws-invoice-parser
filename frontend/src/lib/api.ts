@@ -1,6 +1,7 @@
 import type { SiteId } from '../types'
 
-const BASE = '/api'
+// Strip any accidental trailing slash so URLs like `${BASE}/parse` are always clean.
+const BASE = (import.meta.env.VITE_API_URL as string).replace(/\/$/, '')
 
 // ── Parse ──────────────────────────────────────────────────────────
 export async function parseInvoice(invoiceType: SiteId, file: File) {
