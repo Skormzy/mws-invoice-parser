@@ -32,7 +32,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",                      # local Vite dev server
+        "https://mws-invoice-parser.vercel.app",      # production frontend
+    ],
+    # Covers Vercel preview deployments: mws-invoice-parser-<hash>-<team>.vercel.app
+    allow_origin_regex=r"https://mws-invoice-parser-[^.]+\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
