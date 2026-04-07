@@ -95,16 +95,16 @@ def _dispatch_parse(
     invoice_type: str, pdf_path: str, filename: str
 ) -> tuple[list[Any], list[Any]]:
     if invoice_type == "cambridge":
-        from backend.parsers.cambridge import parse_cambridge
+        from parsers.cambridge import parse_cambridge
         return parse_cambridge(pdf_path, filename)
     elif invoice_type == "pickering_cng":
-        from backend.parsers.pickering_enbridge import parse_pickering_enbridge
+        from parsers.pickering_enbridge import parse_pickering_enbridge
         return parse_pickering_enbridge(pdf_path, filename)
     elif invoice_type == "walgreen":
-        from backend.parsers.walgreen import parse_walgreen
+        from parsers.walgreen import parse_walgreen
         return parse_walgreen(pdf_path, filename)
     elif invoice_type == "pickering_elexicon":
-        from backend.parsers.elexicon import parse_elexicon
+        from parsers.elexicon import parse_elexicon
         return parse_elexicon(pdf_path, filename)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown invoice_type: {invoice_type!r}")
@@ -178,7 +178,7 @@ async def parse(
             pass
 
     # Post-parse validation (range checks, HST, date order)
-    from backend.validation import validate_rows
+    from validation import validate_rows
     val_warnings = validate_rows(invoice_type, row_dicts)
 
     all_warnings = [w.model_dump() for w in (parse_warnings + val_warnings)]
@@ -277,7 +277,7 @@ async def export_excel(site_id: str):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    from backend.export.excel import export_to_excel
+    from export.excel import export_to_excel
 
     excel_bytes = export_to_excel(site_id, response.data or [])
     filename = f"{_SITE_NAMES.get(site_id, site_id)}_Invoice_Tracker.xlsx"

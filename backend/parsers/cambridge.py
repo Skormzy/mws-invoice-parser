@@ -17,8 +17,8 @@ from typing import Optional
 
 import pdfplumber
 
-from backend.schemas.cambridge import CambridgeInvoiceSchema
-from backend.schemas.common import ValidationSeverity, ValidationWarning
+from schemas.cambridge import CambridgeInvoiceSchema
+from schemas.common import ValidationSeverity, ValidationWarning
 
 
 # ─────────────────────────────────────────────────────────────
