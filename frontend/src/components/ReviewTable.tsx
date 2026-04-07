@@ -171,13 +171,13 @@ export default function ReviewTable({
                     key={i}
                     colSpan={seg.span}
                     className={`
-                      sticky top-0 z-30 border-b border-gray-300 px-2 py-1.5 text-center text-xs font-bold
+                      sticky top-0 z-30 border-b border-gray-200 px-2 py-1.5 text-center text-xs font-bold
                       ${seg.isGroup
                         ? 'bg-blue-500 text-white border-l border-r border-blue-400'
-                        : 'bg-blue-800 text-transparent'}
+                        : 'bg-white'}
                     `}
                   >
-                    {seg.label}
+                    {seg.isGroup ? seg.label : ''}
                   </th>
                 ))}
               </tr>

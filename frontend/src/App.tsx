@@ -2,16 +2,24 @@ import { useEffect, useState } from 'react'
 import { Toaster } from 'sonner'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
+import type { SiteId } from './types'
 import Navbar from './components/Navbar'
 import UploadPage from './pages/UploadPage'
 import DashboardPage from './pages/DashboardPage'
+import ProfilePage from './pages/ProfilePage'
 import LoginPage from './pages/LoginPage'
 
-type Page = 'upload' | 'dashboard'
+type Page = 'upload' | 'dashboard' | 'profile'
 
 export default function App() {
   const [page, setPage] = useState<Page>('upload')
   const [user, setUser] = useState<User | null | undefined>(undefined) // undefined = loading
+  const [dashSiteId, setDashSiteId] = useState<SiteId | null>(null)
+
+  const handleSaveSuccess = (siteId: SiteId) => {
+    setDashSiteId(siteId)
+    setPage('dashboard')
+  }
 
   useEffect(() => {
     // Get initial session
@@ -50,7 +58,9 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <Navbar page={page} onNavigate={setPage} user={user} />
-      {page === 'upload' ? <UploadPage /> : <DashboardPage />}
+      {page === 'upload' && <UploadPage onSaveSuccess={handleSaveSuccess} />}
+      {page === 'dashboard' && <DashboardPage key={dashSiteId ?? 'dashboard'} defaultSiteId={dashSiteId ?? undefined} />}
+      {page === 'profile' && <ProfilePage user={user} />}
       <Toaster position="bottom-right" richColors />
     </div>
   )
