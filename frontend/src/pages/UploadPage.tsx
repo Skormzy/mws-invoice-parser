@@ -120,7 +120,11 @@ function DupBanner({ dup, fuzzyAcknowledged, onAcknowledge }: DupBannerProps) {
 
 // ── Main component ───────────────────────────────────────────────────────────
 
-export default function UploadPage() {
+interface UploadPageProps {
+  onSaveSuccess?: (siteId: SiteId) => void
+}
+
+export default function UploadPage({ onSaveSuccess }: UploadPageProps) {
   const [invoiceType, setInvoiceType] = useState<SiteId>('cambridge')
   const [state, setState] = useState<State>('idle')
   const [result, setResult] = useState<ParseResponse | null>(null)
@@ -196,12 +200,15 @@ export default function UploadPage() {
   const handleSave = async (rows: Record<string, unknown>[]) => {
     try {
       const res = await saveInvoice(invoiceType, rows, fileRef.current)
-      toast.success(`Saved ${res.inserted} row${res.inserted !== 1 ? 's' : ''} successfully.`)
+      toast.success(
+        `Saved ${res.inserted} record${res.inserted !== 1 ? 's' : ''} to ${SITE_LABELS[invoiceType]}.`
+      )
       setState('idle')
       setResult(null)
       setDupResult({ duplicate: 'none' })
       fileRef.current = null
       setSuggestedStartDate(null)
+      onSaveSuccess?.(invoiceType)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       toast.error(msg)

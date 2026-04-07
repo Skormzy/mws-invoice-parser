@@ -164,14 +164,15 @@ function DashCell({ col, value, editing, onChange }: CellProps) {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/** Build tab-separated clipboard text from records + column definitions. */
+/** Build tab-separated clipboard text using raw values (dates as YYYY-MM-DD, numbers as plain numerics). */
 function buildClipboardText(cols: ColDef[], records: Record<string, unknown>[]): string {
   const header = cols.map((c) => c.label).join('\t')
   const rows = records.map((rec) =>
     cols.map((c) => {
       const v = rec[c.key]
       if (v == null) return ''
-      return fmtCell(v, c.fmt)
+      if (typeof v === 'string') return v  // dates already YYYY-MM-DD
+      return String(v)                     // numbers as plain numerics
     }).join('\t')
   )
   return [header, ...rows].join('\n')
@@ -179,8 +180,12 @@ function buildClipboardText(cols: ColDef[], records: Record<string, unknown>[]):
 
 // ── Main dashboard page ─────────────────────────────────────────────
 
-export default function DashboardPage() {
-  const [siteId, setSiteId] = useState<SiteId>('cambridge')
+interface DashboardPageProps {
+  defaultSiteId?: SiteId
+}
+
+export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
+  const [siteId, setSiteId] = useState<SiteId>(defaultSiteId ?? 'cambridge')
   const [records, setRecords] = useState<Record<string, unknown>[]>([])
   const [loading, setLoading] = useState(false)
   const [startDate, setStartDate] = useState('')
@@ -195,6 +200,10 @@ export default function DashboardPage() {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const [pendingDeleteLabel, setPendingDeleteLabel] = useState('')
 
+  // Multi-select state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false)
+
   const cols   = SITE_COLS[siteId]
   const groups = SITE_GROUPS[siteId]
   const groupSpec = buildGroupHeaderSpec(cols, groups, false)
@@ -203,6 +212,7 @@ export default function DashboardPage() {
   const fetchRecords = useCallback(async () => {
     setLoading(true)
     setEditingId(null)
+    setSelectedIds(new Set())
     try {
       const data = await getRecords(siteId, startDate || undefined, endDate || undefined)
       setRecords(data)
@@ -287,6 +297,25 @@ export default function DashboardPage() {
     }
   }
 
+  // ── Bulk delete ───────────────────────────────────────────────
+  const handleBulkDelete = async () => {
+    setShowBulkDeleteConfirm(false)
+    const ids = [...selectedIds]
+    let deleted = 0
+    for (const id of ids) {
+      try {
+        await deleteRecord(siteId, id)
+        deleted++
+      } catch {
+        // continue with remaining
+      }
+    }
+    setRecords((prev) => prev.filter((r) => !selectedIds.has(String(r.id))))
+    if (editingId && selectedIds.has(editingId)) setEditingId(null)
+    setSelectedIds(new Set())
+    toast.success(`Deleted ${deleted} record${deleted !== 1 ? 's' : ''}.`)
+  }
+
   // ── PDF viewer ────────────────────────────────────────────────
   const handleViewPdf = async (recordId: string) => {
     try {
@@ -321,10 +350,10 @@ export default function DashboardPage() {
     }
   }
 
-  // Frozen left offset: 40px for actions column, then 112px per frozen col before this one
+  // Frozen left offset: 32px checkbox + 96px actions + 112px per frozen data col before this one
   const frozenOffset = (colIdx: number): string => {
     const frozenBefore = cols.slice(0, colIdx).filter((c) => c.frozen).length
-    return `${frozenBefore * 112}px`
+    return `${128 + frozenBefore * 112}px`
   }
 
   const rowBg = (i: number) => (i % 2 === 0 ? 'bg-white' : 'bg-gray-50')
@@ -376,6 +405,15 @@ export default function DashboardPage() {
           )}
         </div>
 
+        {selectedIds.size > 0 && (
+          <button
+            onClick={() => setShowBulkDeleteConfirm(true)}
+            className="bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium transition-colors"
+          >
+            Delete Selected ({selectedIds.size})
+          </button>
+        )}
+
         <button
           onClick={handleCopyTable}
           disabled={records.length === 0}
@@ -417,20 +455,22 @@ export default function DashboardPage() {
               {/* Group header row */}
               {hasGroups && (
                 <tr>
-                  <th className="sticky top-0 z-30 bg-blue-800 border-b border-gray-300 w-24 min-w-24" />
+                  {/* Checkbox + Actions placeholders */}
+                  <th className="sticky top-0 z-30 bg-white border-b border-gray-200 w-8 min-w-8" />
+                  <th className="sticky top-0 z-30 bg-white border-b border-gray-200 w-24 min-w-24" />
                   {groupSpec.map((seg, i) => (
                     <th
                       key={i}
                       colSpan={seg.span}
                       className={`
-                        sticky top-0 z-30 border-b border-gray-300 px-2 py-1.5
+                        sticky top-0 z-30 border-b border-gray-200 px-2 py-1.5
                         text-center text-xs font-bold
                         ${seg.isGroup
                           ? 'bg-blue-500 text-white border-l border-r border-blue-400'
-                          : 'bg-blue-800 text-transparent'}
+                          : 'bg-white'}
                       `}
                     >
-                      {seg.label}
+                      {seg.isGroup ? seg.label : ''}
                     </th>
                   ))}
                 </tr>
@@ -438,9 +478,30 @@ export default function DashboardPage() {
 
               {/* Column header row */}
               <tr>
+                {/* Select All checkbox */}
                 <th
                   className={`
-                    sticky left-0 z-30 bg-blue-800 text-white
+                    sticky left-0 z-30 bg-blue-800
+                    border-b border-r border-gray-300
+                    w-8 min-w-8 text-center
+                    ${hasGroups ? 'top-8' : 'top-0'}
+                  `}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.size === records.length && records.length > 0}
+                    onChange={(e) => {
+                      if (e.target.checked) setSelectedIds(new Set(records.map((r) => String(r.id))))
+                      else setSelectedIds(new Set())
+                    }}
+                    className="cursor-pointer accent-white"
+                    title={selectedIds.size === records.length && records.length > 0 ? 'Deselect all' : 'Select all'}
+                  />
+                </th>
+                {/* Actions */}
+                <th
+                  className={`
+                    sticky left-8 z-30 bg-blue-800 text-white
                     border-b border-r border-gray-300
                     px-2 py-2 w-24 min-w-24 text-center font-semibold
                     ${hasGroups ? 'top-8' : 'top-0'}
@@ -478,9 +539,27 @@ export default function DashboardPage() {
                     key={id}
                     className={`${isEditing ? 'bg-blue-50 ring-1 ring-blue-300 ring-inset' : `${bg} hover:bg-blue-50`} transition-colors`}
                   >
+                    {/* Checkbox cell */}
+                    <td
+                      className={`sticky left-0 z-10 border-b border-r border-gray-200 text-center px-1 py-1 w-8 min-w-8 ${isEditing ? 'bg-blue-50' : bg}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(id)}
+                        onChange={(e) => {
+                          setSelectedIds((prev) => {
+                            const next = new Set(prev)
+                            e.target.checked ? next.add(id) : next.delete(id)
+                            return next
+                          })
+                        }}
+                        className="cursor-pointer"
+                      />
+                    </td>
+
                     {/* Actions cell */}
                     <td
-                      className={`sticky left-0 z-10 border-b border-r border-gray-200 px-1.5 py-1 ${isEditing ? 'bg-blue-50' : bg}`}
+                      className={`sticky left-8 z-10 border-b border-r border-gray-200 px-1.5 py-1 ${isEditing ? 'bg-blue-50' : bg}`}
                     >
                       <div className="flex items-center gap-1">
                         {isEditing ? (
@@ -588,6 +667,23 @@ export default function DashboardPage() {
         danger
         onConfirm={handleConfirmedDelete}
         onCancel={() => { setShowDeleteConfirm(false); setPendingDeleteId(null) }}
+      />
+
+      {/* ── Bulk delete confirmation ──────────────────────────── */}
+      <ConfirmDialog
+        open={showBulkDeleteConfirm}
+        title={`Delete ${selectedIds.size} record${selectedIds.size !== 1 ? 's' : ''}?`}
+        body={
+          <p>
+            Permanently delete <strong>{selectedIds.size}</strong> selected record
+            {selectedIds.size !== 1 ? 's' : ''}?{' '}
+            <span className="text-red-600">This cannot be undone.</span>
+          </p>
+        }
+        confirmLabel="Delete All"
+        danger
+        onConfirm={handleBulkDelete}
+        onCancel={() => setShowBulkDeleteConfirm(false)}
       />
     </div>
   )
