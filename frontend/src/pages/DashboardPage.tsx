@@ -84,7 +84,7 @@ function SiteCard({ siteId }: SiteCardProps) {
           <Field label="Account #"       field="account_number" />
           <Field label="Bill #"          field="bill_number" />
           <Field label="Rate"            field="rate_description" />
-          <Field label="Sage notes"      field="sage_notes" />
+          <Field label="Notes"            field="sage_notes" />
         </div>
         <div className="flex flex-col gap-2 shrink-0">
           {editing ? (
