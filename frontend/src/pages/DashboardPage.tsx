@@ -207,7 +207,7 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
   const cols   = SITE_COLS[siteId]
   const groups = SITE_GROUPS[siteId]
   const hasGroups = groups.length > 0
-  // Set of column indices that fall inside a group span
+  // Indices of columns that fall inside any group span (used for row-1 rendering)
   const groupedColIndices = new Set(
     groups.flatMap((g) => Array.from({ length: g.colSpan }, (_, j) => g.startIndex + j))
   )
@@ -353,13 +353,11 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
     }
   }
 
-  // Frozen left offset: 32px checkbox + 96px actions + 112px per frozen data col before this one
+  // Sticky left offset for frozen data cols: checkbox(32px) + actions(~96px) + 112px per prior frozen col
   const frozenOffset = (colIdx: number): string => {
     const frozenBefore = cols.slice(0, colIdx).filter((c) => c.frozen).length
     return `${128 + frozenBefore * 112}px`
   }
-
-  const rowBg = (i: number) => (i % 2 === 0 ? 'bg-white' : 'bg-gray-50')
 
   return (
     <div className="flex flex-col" style={{ height: 'calc(100vh - 56px)' }}>
@@ -456,17 +454,38 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
           <table className="text-xs border-separate border-spacing-0 w-full">
             <thead>
               {/*
-               * Row 1: fixed columns (checkbox, actions) + non-grouped data cols use rowSpan=2
-               *        so their labels span both header rows with align-bottom for baseline alignment.
-               *        Group-span cells show the group label.
-               * Row 2 (hasGroups only): column headers for columns that fall inside a group.
+               * Row 1 (hasGroups only): group label band.
+               *   - Only cells for Distribution Charges / Other Charges have visible styling.
+               *   - All other cells are transparent with p-0 so they add no height.
+               * Row 2: every column header with uniform bg-blue-700 styling. No rowSpan anywhere.
                */}
+              {hasGroups && (
+                <tr>
+                  {/* Fixed-column placeholders — invisible */}
+                  <th className="p-0" />
+                  <th className="p-0" />
+                  {cols.map((col, colIdx) => {
+                    const grp = groups.find((g) => g.startIndex === colIdx)
+                    if (grp) {
+                      return (
+                        <th
+                          key={col.key}
+                          colSpan={grp.colSpan}
+                          className="sticky top-0 z-10 bg-blue-100 text-blue-800 text-xs font-semibold text-center px-2 py-1.5 border-b border-blue-200"
+                        >
+                          {grp.label}
+                        </th>
+                      )
+                    }
+                    if (groupedColIndices.has(colIdx)) return null  // covered by colSpan above
+                    return <th key={col.key} className="p-0" />
+                  })}
+                </tr>
+              )}
+
+              {/* Column name row — identical styling on every cell */}
               <tr>
-                {/* Checkbox — rowSpan=2 when grouped so it aligns with col-name row */}
-                <th
-                  rowSpan={hasGroups ? 2 : 1}
-                  className="sticky left-0 top-0 z-30 bg-blue-800 border-b border-r border-gray-300 w-8 min-w-8 text-center align-bottom"
-                >
+                <th className={`sticky left-0 z-30 bg-blue-700 text-white border-b border-r border-blue-600 px-3 py-2 text-center font-semibold ${hasGroups ? 'top-7' : 'top-0'}`}>
                   <input
                     type="checkbox"
                     checked={selectedIds.size === records.length && records.length > 0}
@@ -478,106 +497,45 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                     title={selectedIds.size === records.length && records.length > 0 ? 'Deselect all' : 'Select all'}
                   />
                 </th>
-                {/* Actions — rowSpan=2 when grouped */}
-                <th
-                  rowSpan={hasGroups ? 2 : 1}
-                  className="sticky left-8 top-0 z-30 bg-blue-800 text-white border-b border-r border-gray-300 px-2 py-2 w-24 min-w-24 text-center font-semibold align-bottom"
-                >
+                <th className={`sticky left-8 z-30 bg-blue-700 text-white border-b border-r border-blue-600 px-3 py-2 text-center font-semibold whitespace-nowrap ${hasGroups ? 'top-7' : 'top-0'}`}>
                   Actions
                 </th>
-                {cols.map((col, colIdx) => {
-                  if (hasGroups) {
-                    const grp = groups.find((g) => g.startIndex === colIdx)
-                    if (grp) {
-                      // Group label cell spanning the group's columns
-                      return (
-                        <th
-                          key={col.key}
-                          colSpan={grp.colSpan}
-                          className="sticky top-0 z-20 bg-blue-500 text-white border-b border-l border-r border-blue-400 px-2 py-1.5 text-center text-xs font-bold"
-                        >
-                          {grp.label}
-                        </th>
-                      )
-                    }
-                    if (groupedColIndices.has(colIdx)) return null  // mid-group, rendered via colSpan
-                    // Non-grouped column: rowSpan=2 + align-bottom
-                    return (
-                      <th
-                        key={col.key}
-                        rowSpan={2}
-                        className={`
-                          sticky top-0 border-b border-r border-gray-300 bg-blue-800 text-white
-                          px-2 py-2 font-semibold whitespace-nowrap text-xs align-bottom
-                          ${col.frozen ? 'z-30' : 'z-20'}
-                          ${col.rightAlign ? 'text-right' : 'text-left'}
-                          ${col.width ?? ''}
-                        `}
-                        style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
-                      >
-                        {col.label}
-                      </th>
-                    )
-                  }
-                  // No groups: plain sticky header
-                  return (
-                    <th
-                      key={col.key}
-                      className={`
-                        sticky top-0 border-b border-r border-gray-300 bg-blue-800 text-white
-                        px-2 py-2 font-semibold whitespace-nowrap text-xs
-                        ${col.frozen ? 'z-30' : 'z-20'}
-                        ${col.rightAlign ? 'text-right' : 'text-left'}
-                        ${col.width ?? ''}
-                      `}
-                      style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
-                    >
-                      {col.label}
-                    </th>
-                  )
-                })}
+                {cols.map((col, colIdx) => (
+                  <th
+                    key={col.key}
+                    className={`
+                      sticky bg-blue-700 text-white border-b border-r border-blue-600
+                      px-3 py-2 font-semibold whitespace-nowrap
+                      ${hasGroups ? 'top-7' : 'top-0'}
+                      ${col.frozen ? 'z-30' : 'z-20'}
+                      ${col.rightAlign ? 'text-right' : 'text-left'}
+                    `}
+                    style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
+                  >
+                    {col.label}
+                  </th>
+                ))}
               </tr>
-
-              {/* Row 2 — only grouped columns (non-grouped already rendered above with rowSpan=2) */}
-              {hasGroups && (
-                <tr>
-                  {cols.map((col) => {
-                    const colIdx = cols.indexOf(col)
-                    if (!groupedColIndices.has(colIdx)) return null
-                    return (
-                      <th
-                        key={col.key}
-                        className={`
-                          sticky top-8 z-20 border-b border-r border-gray-300 bg-blue-800 text-white
-                          px-2 py-2 font-semibold whitespace-nowrap text-xs
-                          ${col.rightAlign ? 'text-right' : 'text-left'}
-                          ${col.width ?? ''}
-                        `}
-                      >
-                        {col.label}
-                      </th>
-                    )
-                  })}
-                </tr>
-              )}
             </thead>
 
             <tbody>
-              {records.map((record, rowIdx) => {
+              {records.map((record) => {
                 const id = String(record.id)
                 const isEditing = editingId === id
                 const displayRow = isEditing ? editBuffer : record
-                const bg = rowBg(rowIdx)
 
                 return (
+                  // group class enables group-hover on sticky cells for full-row highlight
                   <tr
                     key={id}
-                    className={`${isEditing ? 'bg-blue-50 ring-1 ring-blue-300 ring-inset' : `${bg} hover:bg-blue-50`} transition-colors`}
+                    className={`group transition-colors ${
+                      isEditing
+                        ? 'bg-blue-50 ring-1 ring-blue-300 ring-inset'
+                        : 'odd:bg-white even:bg-gray-50 hover:bg-blue-50'
+                    }`}
                   >
-                    {/* Checkbox cell */}
-                    <td
-                      className={`sticky left-0 z-10 border-b border-r border-gray-200 text-center px-1 py-1 w-8 min-w-8 ${isEditing ? 'bg-blue-50' : bg}`}
-                    >
+                    {/* Checkbox — bg-inherit picks up tr background including hover/odd/even */}
+                    <td className="sticky left-0 z-10 border-b border-r border-gray-200 text-center px-1 py-1 w-8 min-w-8 bg-inherit">
                       <input
                         type="checkbox"
                         checked={selectedIds.has(id)}
@@ -592,21 +550,13 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                       />
                     </td>
 
-                    {/* Actions cell */}
-                    <td
-                      className={`sticky left-8 z-10 border-b border-r border-gray-200 px-1.5 py-1 ${isEditing ? 'bg-blue-50' : bg}`}
-                    >
+                    {/* Actions */}
+                    <td className="sticky left-8 z-10 border-b border-r border-gray-200 px-1.5 py-1 bg-inherit">
                       <div className="flex items-center gap-1">
                         {isEditing ? (
                           <>
                             <button
-                              onClick={() => {
-                                if (changedFields.length === 0) {
-                                  setEditingId(null)
-                                } else {
-                                  setShowEditConfirm(true)
-                                }
-                              }}
+                              onClick={() => changedFields.length === 0 ? setEditingId(null) : setShowEditConfirm(true)}
                               className="px-2 py-0.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
                             >
                               Save
@@ -620,28 +570,10 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                           </>
                         ) : (
                           <>
-                            <button
-                              onClick={() => startEdit(record)}
-                              title="Edit row"
-                              className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
-                            >
-                              ✏
-                            </button>
-                            <button
-                              onClick={() => requestDelete(record)}
-                              title="Delete row"
-                              className="px-2 py-0.5 text-xs bg-red-50 text-red-500 rounded hover:bg-red-100"
-                            >
-                              🗑
-                            </button>
+                            <button onClick={() => startEdit(record)} title="Edit row" className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">✏</button>
+                            <button onClick={() => requestDelete(record)} title="Delete row" className="px-2 py-0.5 text-xs bg-red-50 text-red-500 rounded hover:bg-red-100">🗑</button>
                             {record.source_pdf_path && (
-                              <button
-                                onClick={() => handleViewPdf(id)}
-                                title="View PDF"
-                                className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
-                              >
-                                📄
-                              </button>
+                              <button onClick={() => handleViewPdf(id)} title="View PDF" className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">📄</button>
                             )}
                           </>
                         )}
@@ -654,7 +586,7 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                         key={col.key}
                         className={`
                           border-b border-r border-gray-200 px-2 py-1 whitespace-nowrap
-                          ${col.frozen ? `sticky z-10 ${isEditing ? 'bg-blue-50' : bg}` : ''}
+                          ${col.frozen ? 'sticky z-10 bg-inherit' : ''}
                         `}
                         style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
                       >
