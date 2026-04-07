@@ -23,8 +23,8 @@ from typing import Optional
 
 import pdfplumber
 
-from backend.schemas.pickering_enbridge import PickeringCngInvoiceSchema
-from backend.schemas.common import ValidationSeverity, ValidationWarning
+from schemas.pickering_enbridge import PickeringCngInvoiceSchema
+from schemas.common import ValidationSeverity, ValidationWarning
 
 
 # ─────────────────────────────────────────────────────────────

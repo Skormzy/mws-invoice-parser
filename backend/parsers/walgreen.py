@@ -30,8 +30,8 @@ from typing import Optional
 
 import anthropic
 
-from backend.schemas.walgreen import WalgreenInvoiceSchema
-from backend.schemas.common import ValidationSeverity, ValidationWarning
+from schemas.walgreen import WalgreenInvoiceSchema
+from schemas.common import ValidationSeverity, ValidationWarning
 
 # ─────────────────────────────────────────────────────────────
 # Constants

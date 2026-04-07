@@ -25,8 +25,8 @@ from typing import Optional
 
 import pdfplumber
 
-from backend.schemas.elexicon import PickeringElexiconInvoiceSchema
-from backend.schemas.common import ValidationSeverity, ValidationWarning
+from schemas.elexicon import PickeringElexiconInvoiceSchema
+from schemas.common import ValidationSeverity, ValidationWarning
 
 
 # ─────────────────────────────────────────────────────────────

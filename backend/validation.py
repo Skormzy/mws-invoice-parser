@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.schemas.common import ValidationSeverity, ValidationWarning
+from schemas.common import ValidationSeverity, ValidationWarning
 
 _ENBRIDGE_SITES = {"cambridge", "pickering_cng", "walgreen"}
 
