@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { SiteId, ValidationWarning } from '../types'
-import { SITE_COLS, SITE_GROUPS, buildGroupHeaderSpec } from '../lib/columns'
+import { SITE_COLS, SITE_GROUPS } from '../lib/columns'
 import { fmtCell } from '../lib/format'
 import ConfirmDialog from './ConfirmDialog'
 
@@ -18,8 +18,11 @@ export default function ReviewTable({
 }: Props) {
   const cols = SITE_COLS[invoiceType]
   const groups = SITE_GROUPS[invoiceType]
-  const groupSpec = useMemo(() => buildGroupHeaderSpec(cols, groups, true), [cols, groups])
-  const hasGroups = groupSpec.length > 0
+  const hasGroups = groups.length > 0
+  const groupedColIndices = useMemo(
+    () => new Set(groups.flatMap((g) => Array.from({ length: g.colSpan }, (_, j) => g.startIndex + j))),
+    [groups],
+  )
 
   const [rows, setRows] = useState<Record<string, unknown>[]>(
     () => initialRows.map((r) => ({ ...r })),
@@ -163,58 +166,101 @@ export default function ReviewTable({
       <div className="flex-1 overflow-auto">
         <table className="text-xs border-separate border-spacing-0 w-full">
           <thead>
-            {/* Group header row (Elexicon only) */}
-            {hasGroups && (
-              <tr>
-                {groupSpec.map((seg, i) => (
-                  <th
-                    key={i}
-                    colSpan={seg.span}
-                    className={`
-                      sticky top-0 z-30 border-b border-gray-200 px-2 py-1.5 text-center text-xs font-bold
-                      ${seg.isGroup
-                        ? 'bg-blue-500 text-white border-l border-r border-blue-400'
-                        : 'bg-white'}
-                    `}
-                  >
-                    {seg.isGroup ? seg.label : ''}
-                  </th>
-                ))}
-              </tr>
-            )}
-
-            {/* Column header row */}
+            {/*
+             * Row 1: row# + non-grouped cols use rowSpan=2 with align-bottom for baseline alignment.
+             *        Group spans show the group label.
+             * Row 2 (hasGroups only): column headers only for columns inside a group.
+             */}
             <tr>
-              {/* Row number */}
+              {/* Row number — rowSpan=2 when grouped */}
               <th
-                className={`
-                  sticky left-0 z-30 border-b border-r border-gray-300 bg-blue-800
-                  text-white text-center px-2 py-2 font-semibold w-10 min-w-10
-                  ${hasGroups ? 'top-8' : 'top-0'}
-                `}
+                rowSpan={hasGroups ? 2 : 1}
+                className="sticky left-0 top-0 z-30 border-b border-r border-gray-300 bg-blue-800 text-white text-center px-2 py-2 font-semibold w-10 min-w-10 align-bottom"
               >
                 #
               </th>
-              {cols.map((col, colIdx) => (
-                <th
-                  key={col.key}
-                  className={`
-                    border-b border-r border-gray-300 bg-blue-800 text-white
-                    px-2 py-2 font-semibold whitespace-nowrap text-xs
-                    ${col.frozen ? `sticky z-30` : ''}
-                    ${col.rightAlign ? 'text-right' : 'text-left'}
-                    ${col.width ?? ''}
-                    ${hasGroups ? 'top-8' : 'sticky top-0'}
-                  `}
-                  style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
-                >
-                  {col.label}
-                  {col.readOnly && (
-                    <span className="ml-1 text-blue-300 font-normal text-xs">(calc)</span>
-                  )}
-                </th>
-              ))}
+              {cols.map((col, colIdx) => {
+                if (hasGroups) {
+                  const grp = groups.find((g) => g.startIndex === colIdx)
+                  if (grp) {
+                    return (
+                      <th
+                        key={col.key}
+                        colSpan={grp.colSpan}
+                        className="sticky top-0 z-20 bg-blue-500 text-white border-b border-l border-r border-blue-400 px-2 py-1.5 text-center text-xs font-bold"
+                      >
+                        {grp.label}
+                      </th>
+                    )
+                  }
+                  if (groupedColIndices.has(colIdx)) return null
+                  // Non-grouped column: rowSpan=2 + align-bottom
+                  return (
+                    <th
+                      key={col.key}
+                      rowSpan={2}
+                      className={`
+                        sticky top-0 border-b border-r border-gray-300 bg-blue-800 text-white
+                        px-2 py-2 font-semibold whitespace-nowrap text-xs align-bottom
+                        ${col.frozen ? 'z-30' : 'z-20'}
+                        ${col.rightAlign ? 'text-right' : 'text-left'}
+                        ${col.width ?? ''}
+                      `}
+                      style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
+                    >
+                      {col.label}
+                      {col.readOnly && (
+                        <span className="ml-1 text-blue-300 font-normal text-xs">(calc)</span>
+                      )}
+                    </th>
+                  )
+                }
+                // No groups: plain sticky header
+                return (
+                  <th
+                    key={col.key}
+                    className={`
+                      sticky top-0 border-b border-r border-gray-300 bg-blue-800 text-white
+                      px-2 py-2 font-semibold whitespace-nowrap text-xs
+                      ${col.frozen ? 'z-30' : 'z-20'}
+                      ${col.rightAlign ? 'text-right' : 'text-left'}
+                      ${col.width ?? ''}
+                    `}
+                    style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
+                  >
+                    {col.label}
+                    {col.readOnly && (
+                      <span className="ml-1 text-blue-300 font-normal text-xs">(calc)</span>
+                    )}
+                  </th>
+                )
+              })}
             </tr>
+
+            {/* Row 2 — only grouped columns */}
+            {hasGroups && (
+              <tr>
+                {cols.map((col, colIdx) => {
+                  if (!groupedColIndices.has(colIdx)) return null
+                  return (
+                    <th
+                      key={col.key}
+                      className={`
+                        sticky top-8 z-20 border-b border-r border-gray-300 bg-blue-800 text-white
+                        px-2 py-2 font-semibold whitespace-nowrap text-xs
+                        ${col.rightAlign ? 'text-right' : 'text-left'}
+                        ${col.width ?? ''}
+                      `}
+                    >
+                      {col.label}
+                      {col.readOnly && (
+                        <span className="ml-1 text-blue-300 font-normal text-xs">(calc)</span>
+                      )}
+                    </th>
+                  )
+                })}
+              </tr>
+            )}
           </thead>
 
           <tbody>

@@ -7,7 +7,7 @@ import {
 } from '../lib/api'
 import {
   SITE_COLS, SITE_GROUPS, SITE_LABELS,
-  buildGroupHeaderSpec, type ColDef,
+  type ColDef,
 } from '../lib/columns'
 import { fmtCell } from '../lib/format'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -206,8 +206,11 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
 
   const cols   = SITE_COLS[siteId]
   const groups = SITE_GROUPS[siteId]
-  const groupSpec = buildGroupHeaderSpec(cols, groups, false)
-  const hasGroups = groupSpec.length > 0
+  const hasGroups = groups.length > 0
+  // Set of column indices that fall inside a group span
+  const groupedColIndices = new Set(
+    groups.flatMap((g) => Array.from({ length: g.colSpan }, (_, j) => g.startIndex + j))
+  )
 
   const fetchRecords = useCallback(async () => {
     setLoading(true)
@@ -452,40 +455,17 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
         ) : (
           <table className="text-xs border-separate border-spacing-0 w-full">
             <thead>
-              {/* Group header row */}
-              {hasGroups && (
-                <tr>
-                  {/* Checkbox + Actions placeholders */}
-                  <th className="sticky top-0 z-30 bg-white border-b border-gray-200 w-8 min-w-8" />
-                  <th className="sticky top-0 z-30 bg-white border-b border-gray-200 w-24 min-w-24" />
-                  {groupSpec.map((seg, i) => (
-                    <th
-                      key={i}
-                      colSpan={seg.span}
-                      className={`
-                        sticky top-0 z-30 border-b border-gray-200 px-2 py-1.5
-                        text-center text-xs font-bold
-                        ${seg.isGroup
-                          ? 'bg-blue-500 text-white border-l border-r border-blue-400'
-                          : 'bg-white'}
-                      `}
-                    >
-                      {seg.isGroup ? seg.label : ''}
-                    </th>
-                  ))}
-                </tr>
-              )}
-
-              {/* Column header row */}
+              {/*
+               * Row 1: fixed columns (checkbox, actions) + non-grouped data cols use rowSpan=2
+               *        so their labels span both header rows with align-bottom for baseline alignment.
+               *        Group-span cells show the group label.
+               * Row 2 (hasGroups only): column headers for columns that fall inside a group.
+               */}
               <tr>
-                {/* Select All checkbox */}
+                {/* Checkbox — rowSpan=2 when grouped so it aligns with col-name row */}
                 <th
-                  className={`
-                    sticky left-0 z-30 bg-blue-800
-                    border-b border-r border-gray-300
-                    w-8 min-w-8 text-center
-                    ${hasGroups ? 'top-8' : 'top-0'}
-                  `}
+                  rowSpan={hasGroups ? 2 : 1}
+                  className="sticky left-0 top-0 z-30 bg-blue-800 border-b border-r border-gray-300 w-8 min-w-8 text-center align-bottom"
                 >
                   <input
                     type="checkbox"
@@ -498,33 +478,88 @@ export default function DashboardPage({ defaultSiteId }: DashboardPageProps) {
                     title={selectedIds.size === records.length && records.length > 0 ? 'Deselect all' : 'Select all'}
                   />
                 </th>
-                {/* Actions */}
+                {/* Actions — rowSpan=2 when grouped */}
                 <th
-                  className={`
-                    sticky left-8 z-30 bg-blue-800 text-white
-                    border-b border-r border-gray-300
-                    px-2 py-2 w-24 min-w-24 text-center font-semibold
-                    ${hasGroups ? 'top-8' : 'top-0'}
-                  `}
+                  rowSpan={hasGroups ? 2 : 1}
+                  className="sticky left-8 top-0 z-30 bg-blue-800 text-white border-b border-r border-gray-300 px-2 py-2 w-24 min-w-24 text-center font-semibold align-bottom"
                 >
                   Actions
                 </th>
-                {cols.map((col, colIdx) => (
-                  <th
-                    key={col.key}
-                    className={`
-                      border-b border-r border-gray-300 bg-blue-800 text-white
-                      px-2 py-2 font-semibold whitespace-nowrap text-xs
-                      ${col.frozen ? 'sticky z-30' : hasGroups ? 'top-8' : 'sticky top-0'}
-                      ${col.rightAlign ? 'text-right' : 'text-left'}
-                      ${col.width ?? ''}
-                    `}
-                    style={col.frozen ? { top: hasGroups ? '32px' : '0', left: frozenOffset(colIdx) } : undefined}
-                  >
-                    {col.label}
-                  </th>
-                ))}
+                {cols.map((col, colIdx) => {
+                  if (hasGroups) {
+                    const grp = groups.find((g) => g.startIndex === colIdx)
+                    if (grp) {
+                      // Group label cell spanning the group's columns
+                      return (
+                        <th
+                          key={col.key}
+                          colSpan={grp.colSpan}
+                          className="sticky top-0 z-20 bg-blue-500 text-white border-b border-l border-r border-blue-400 px-2 py-1.5 text-center text-xs font-bold"
+                        >
+                          {grp.label}
+                        </th>
+                      )
+                    }
+                    if (groupedColIndices.has(colIdx)) return null  // mid-group, rendered via colSpan
+                    // Non-grouped column: rowSpan=2 + align-bottom
+                    return (
+                      <th
+                        key={col.key}
+                        rowSpan={2}
+                        className={`
+                          sticky top-0 border-b border-r border-gray-300 bg-blue-800 text-white
+                          px-2 py-2 font-semibold whitespace-nowrap text-xs align-bottom
+                          ${col.frozen ? 'z-30' : 'z-20'}
+                          ${col.rightAlign ? 'text-right' : 'text-left'}
+                          ${col.width ?? ''}
+                        `}
+                        style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
+                      >
+                        {col.label}
+                      </th>
+                    )
+                  }
+                  // No groups: plain sticky header
+                  return (
+                    <th
+                      key={col.key}
+                      className={`
+                        sticky top-0 border-b border-r border-gray-300 bg-blue-800 text-white
+                        px-2 py-2 font-semibold whitespace-nowrap text-xs
+                        ${col.frozen ? 'z-30' : 'z-20'}
+                        ${col.rightAlign ? 'text-right' : 'text-left'}
+                        ${col.width ?? ''}
+                      `}
+                      style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
+                    >
+                      {col.label}
+                    </th>
+                  )
+                })}
               </tr>
+
+              {/* Row 2 — only grouped columns (non-grouped already rendered above with rowSpan=2) */}
+              {hasGroups && (
+                <tr>
+                  {cols.map((col) => {
+                    const colIdx = cols.indexOf(col)
+                    if (!groupedColIndices.has(colIdx)) return null
+                    return (
+                      <th
+                        key={col.key}
+                        className={`
+                          sticky top-8 z-20 border-b border-r border-gray-300 bg-blue-800 text-white
+                          px-2 py-2 font-semibold whitespace-nowrap text-xs
+                          ${col.rightAlign ? 'text-right' : 'text-left'}
+                          ${col.width ?? ''}
+                        `}
+                      >
+                        {col.label}
+                      </th>
+                    )
+                  })}
+                </tr>
+              )}
             </thead>
 
             <tbody>
