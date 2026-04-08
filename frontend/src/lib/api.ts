@@ -4,13 +4,27 @@ const BASE = import.meta.env.VITE_API_URL
   ? (import.meta.env.VITE_API_URL as string).replace(/\/$/, '')
   : 'https://pmzlbntkqwqtiaqivjuw.supabase.co/functions/v1/proxy/api'
 
+// Supabase API gateway requires the anon key on every request
+const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
+
+/** Headers for JSON body requests */
+const JSON_HEADERS = {
+  'Content-Type': 'application/json',
+  'apikey': ANON_KEY,
+}
+
+/** Headers for GET/DELETE/multipart requests (no Content-Type — browser sets it for FormData) */
+const API_HEADERS = {
+  'apikey': ANON_KEY,
+}
+
 // ── Parse ──────────────────────────────────────────────────────────
 export async function parseInvoice(invoiceType: SiteId, file: File) {
   const form = new FormData()
   form.append('invoice_type', invoiceType)
   form.append('file', file)
 
-  const res = await fetch(`${BASE}/parse`, { method: 'POST', body: form })
+  const res = await fetch(`${BASE}/parse`, { method: 'POST', headers: API_HEADERS, body: form })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(body.detail ?? 'Parse failed')
@@ -29,7 +43,7 @@ export async function saveInvoice(
   form.append('rows', JSON.stringify(rows))
   if (file) form.append('file', file)
 
-  const res = await fetch(`${BASE}/save`, { method: 'POST', body: form })
+  const res = await fetch(`${BASE}/save`, { method: 'POST', headers: API_HEADERS, body: form })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(body.detail ?? 'Save failed')
@@ -50,7 +64,7 @@ export async function getRecords(
   if (limit) params.set('limit', String(limit))
   const qs = params.toString()
 
-  const res = await fetch(`${BASE}/records/${siteId}${qs ? `?${qs}` : ''}`)
+  const res = await fetch(`${BASE}/records/${siteId}${qs ? `?${qs}` : ''}`, { headers: API_HEADERS })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(body.detail ?? 'Failed to load records')
@@ -65,7 +79,7 @@ export async function updateRecord(
 ): Promise<Record<string, unknown>> {
   const res = await fetch(`${BASE}/records/${siteId}/${recordId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify(row),
   })
   if (!res.ok) {
@@ -76,7 +90,10 @@ export async function updateRecord(
 }
 
 export async function deleteRecord(siteId: SiteId, recordId: string): Promise<void> {
-  const res = await fetch(`${BASE}/records/${siteId}/${recordId}`, { method: 'DELETE' })
+  const res = await fetch(`${BASE}/records/${siteId}/${recordId}`, {
+    method: 'DELETE',
+    headers: API_HEADERS,
+  })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(body.detail ?? 'Delete failed')
@@ -101,7 +118,9 @@ export async function checkDuplicate(
   if (opts.readPeriod) params.set('read_period', opts.readPeriod)
   if (opts.totalCharge != null) params.set('total_charge', String(opts.totalCharge))
 
-  const res = await fetch(`${BASE}/check-duplicate/${siteId}?${params.toString()}`)
+  const res = await fetch(`${BASE}/check-duplicate/${siteId}?${params.toString()}`, {
+    headers: API_HEADERS,
+  })
   if (!res.ok) {
     // Silently return 'none' on error — duplicate check is non-blocking
     return { duplicate: 'none' }
@@ -111,7 +130,7 @@ export async function checkDuplicate(
 
 // ── Sites ──────────────────────────────────────────────────────────
 export async function getSite(siteId: SiteId): Promise<Record<string, unknown>> {
-  const res = await fetch(`${BASE}/sites/${siteId}`)
+  const res = await fetch(`${BASE}/sites/${siteId}`, { headers: API_HEADERS })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(body.detail ?? 'Failed to load site')
@@ -125,7 +144,7 @@ export async function updateSite(
 ): Promise<Record<string, unknown>> {
   const res = await fetch(`${BASE}/sites/${siteId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: JSON_HEADERS,
     body: JSON.stringify(data),
   })
   if (!res.ok) {
@@ -137,7 +156,7 @@ export async function updateSite(
 
 // ── PDF signed URL ─────────────────────────────────────────────────
 export async function getPdfUrl(siteId: SiteId, recordId: string): Promise<string> {
-  const res = await fetch(`${BASE}/pdf/${siteId}/${recordId}`)
+  const res = await fetch(`${BASE}/pdf/${siteId}/${recordId}`, { headers: API_HEADERS })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(body.detail ?? 'Could not retrieve PDF URL')
@@ -148,7 +167,7 @@ export async function getPdfUrl(siteId: SiteId, recordId: string): Promise<strin
 
 // ── Export ─────────────────────────────────────────────────────────
 export async function exportExcel(siteId: SiteId, label: string) {
-  const res = await fetch(`${BASE}/export/${siteId}`)
+  const res = await fetch(`${BASE}/export/${siteId}`, { headers: API_HEADERS })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(body.detail ?? 'Export failed')
