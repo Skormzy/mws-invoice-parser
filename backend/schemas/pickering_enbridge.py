@@ -29,8 +29,8 @@ class PickeringCngInvoiceSchema(BaseModel):
     enbridge_qtr_reference: str = Field(
         ..., description='"Q4 2025" for single-quarter, "Q3 & Q4 2024" for split periods'
     )
-    start_date: date
-    end_date: date
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
     billing_period: Optional[int] = Field(
         None, description="Number of days in billing period (integer, not a date)"
     )

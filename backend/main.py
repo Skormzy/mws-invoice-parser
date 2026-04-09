@@ -17,14 +17,13 @@ Routes (all mounted at root; Vite proxy strips /api prefix):
 from __future__ import annotations
 
 import base64
-import json
 import os
 import tempfile
 from io import BytesIO
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -136,41 +135,6 @@ def _clean_row(row: dict[str, Any], strip_extra: set[str] | None = None) -> dict
     return {k: v for k, v in row.items() if k not in exclude}
 
 
-def _upload_pdf(sb, site_id: str, filename: str, content: bytes, rows: list[dict]) -> str:
-    """
-    Upload the invoice PDF to Supabase Storage.
-    Path: {site_id}/{invoice_number_or_YYYY-MM}_{filename}
-    Returns the storage path string.
-    """
-    from datetime import date as _date
-    first = rows[0] if rows else {}
-
-    # Prefer invoice_number in the path for easier identification
-    inv_num = first.get("invoice_number")
-    if inv_num:
-        prefix = str(inv_num)
-    else:
-        raw_date = first.get("start_date") or first.get("billing_period")
-        if raw_date and len(str(raw_date)) >= 7:
-            prefix = str(raw_date)[:7]
-        else:
-            prefix = _date.today().strftime("%Y-%m")
-
-    safe_name = filename.replace(" ", "_")
-    path = f"{site_id}/{prefix}_{safe_name}"
-
-    try:
-        sb.storage.from_(_STORAGE_BUCKET).upload(
-            path,
-            content,
-            {"content-type": "application/pdf", "upsert": "true"},
-        )
-    except Exception as exc:
-        print(f"[WARN] PDF upload failed: {exc}")
-        return ""
-
-    return path
-
 
 # ─────────────────────────────────────────────────────────────
 # Routes
@@ -181,31 +145,48 @@ async def health():
     return {"status": "ok"}
 
 
+# ── Request bodies ─────────────────────────────────────────────
+
+class ParseRequest(BaseModel):
+    invoice_type: str
+    storage_path: str  # path in the 'invoices' bucket (uploaded by frontend before calling /parse)
+
+
+class SaveRequest(BaseModel):
+    invoice_type: str
+    rows: list[dict[str, Any]]
+    storage_path: Optional[str] = None  # already-uploaded PDF path in 'invoices' bucket
+
+
 # ── Parse ─────────────────────────────────────────────────────
 
 @app.post("/parse")
-async def parse(
-    invoice_type: str = Form(...),
-    file: UploadFile = File(...),
-):
+async def parse(body: ParseRequest):
     """
-    Parse a PDF invoice. Returns extracted rows, validation warnings, and base64 page images.
+    Parse a PDF invoice. The PDF must already be uploaded to Supabase Storage.
+    Returns extracted rows, validation warnings, and base64 page images.
 
-    Multipart fields:
-      invoice_type — cambridge | pickering_cng | walgreen | pickering_elexicon
-      file         — the PDF
+    JSON body:
+      invoice_type  — cambridge | pickering_cng | walgreen | pickering_elexicon
+      storage_path  — path in the 'invoices' bucket (e.g. "temp/1234567890_invoice.pdf")
     """
-    if invoice_type not in _TABLE_MAP:
-        raise HTTPException(status_code=400, detail=f"Unknown invoice_type: {invoice_type!r}")
+    if body.invoice_type not in _TABLE_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown invoice_type: {body.invoice_type!r}")
 
-    content = await file.read()
+    sb = _get_supabase()
+    try:
+        content: bytes = sb.storage.from_(_STORAGE_BUCKET).download(body.storage_path)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to download PDF from storage: {exc}") from exc
+
+    filename = body.storage_path.split("/")[-1]
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
 
     try:
-        rows_pydantic, parse_warnings = _dispatch_parse(invoice_type, tmp_path, file.filename or "")
+        rows_pydantic, parse_warnings = _dispatch_parse(body.invoice_type, tmp_path, filename)
         row_dicts = [r.model_dump(mode="json") for r in rows_pydantic]
         page_images = _pdf_to_images(tmp_path)
     except HTTPException:
@@ -219,57 +200,42 @@ async def parse(
             pass
 
     from validation import validate_rows
-    val_warnings = validate_rows(invoice_type, row_dicts)
+    val_warnings = validate_rows(body.invoice_type, row_dicts)
     all_warnings = [w.model_dump() for w in (parse_warnings + val_warnings)]
 
     return {
-        "invoice_type": invoice_type,
+        "invoice_type": body.invoice_type,
         "rows": row_dicts,
         "warnings": all_warnings,
         "pdf_page_images": page_images,
+        "storage_path": body.storage_path,
     }
 
 
 # ── Save ──────────────────────────────────────────────────────
 
 @app.post("/save")
-async def save(
-    invoice_type: str = Form(...),
-    rows: str = Form(...),           # JSON-encoded list of row dicts
-    file: Optional[UploadFile] = File(None),
-):
+async def save(body: SaveRequest):
     """
-    Insert parsed rows into Supabase and (optionally) upload the original PDF to Storage.
+    Insert parsed rows into Supabase. The PDF is already in Storage from the /parse step.
 
-    Multipart fields:
-      invoice_type — site identifier
-      rows         — JSON string of row array (same shape as /parse response rows)
-      file         — (optional) the original PDF for storage
+    JSON body:
+      invoice_type  — site identifier
+      rows          — list of row dicts (same shape as /parse response rows)
+      storage_path  — (optional) path in 'invoices' bucket; stamped on each row as source_pdf_path
     """
-    table = _TABLE_MAP.get(invoice_type)
+    table = _TABLE_MAP.get(body.invoice_type)
     if not table:
-        raise HTTPException(status_code=400, detail=f"Unknown invoice_type: {invoice_type!r}")
-
-    try:
-        rows_data: list[dict[str, Any]] = json.loads(rows)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid rows JSON: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"Unknown invoice_type: {body.invoice_type!r}")
 
     sb = _get_supabase()
 
-    # Upload PDF to Storage and record path
-    pdf_path_stored = ""
-    if file is not None:
-        pdf_content = await file.read()
-        if pdf_content:
-            pdf_path_stored = _upload_pdf(sb, invoice_type, file.filename or "invoice.pdf", pdf_content, rows_data)
-
-    # Stamp each row with source_pdf_path
+    # Stamp each row with source_pdf_path if we have a storage path
     clean_rows = []
-    for row in rows_data:
+    for row in body.rows:
         clean = _clean_row(row)
-        if pdf_path_stored:
-            clean["source_pdf_path"] = pdf_path_stored
+        if body.storage_path:
+            clean["source_pdf_path"] = body.storage_path
         clean_rows.append(clean)
 
     try:

@@ -35,8 +35,8 @@ class WalgreenInvoiceSchema(BaseModel):
         ..., description='"Q1 2026" or "Q4 2025 & Q1 2026" for split periods'
     )
     rate: WalgreenRate = Field(..., description="Rate code: 110 (Firm) or 145 (Interruptible)")
-    start_date: date
-    end_date: date
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
     days: Optional[int] = Field(None, description="Number of days in billing period")
 
     # ── Consumption ─────────────────────────────────────────────────
