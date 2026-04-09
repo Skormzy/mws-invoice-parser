@@ -3,6 +3,24 @@ import type { SiteId, DupCheckResponse } from '../types'
 
 const PROXY_BASE = `${(import.meta.env.VITE_SUPABASE_URL as string).replace(/\/$/, '')}/functions/v1/proxy/api`
 
+function extractErrorMessage(err: unknown, fallback: string): string {
+  if (!err || typeof err !== 'object') return fallback
+  const detail = (err as Record<string, unknown>).detail
+  if (Array.isArray(detail)) {
+    // FastAPI 422 returns [{loc, msg, type}]
+    return detail.map((e) => {
+      if (e && typeof e === 'object') {
+        const loc = (e as Record<string, unknown>).loc
+        const msg = (e as Record<string, unknown>).msg
+        const locStr = Array.isArray(loc) ? loc.join('.') : String(loc ?? '')
+        return locStr ? `${locStr}: ${msg}` : String(msg)
+      }
+      return String(e)
+    }).join('; ')
+  }
+  return String(detail || fallback)
+}
+
 async function proxyHeaders(): Promise<Record<string, string>> {
   return {
     'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY as string,
@@ -30,7 +48,7 @@ export async function parseInvoice(invoiceType: SiteId, file: File) {
 
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'Parse failed')
+    throw new Error(extractErrorMessage(err, 'Parse failed'))
   }
   const parsed = await resp.json()
   // Include storage_path so UploadPage can forward it to saveInvoice
@@ -51,7 +69,7 @@ export async function saveInvoice(
 
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'Save failed')
+    throw new Error(extractErrorMessage(err, 'Save failed'))
   }
   return resp.json()
 }
@@ -74,7 +92,7 @@ export async function getRecords(
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'Fetch failed')
+    throw new Error(extractErrorMessage(err, 'Fetch failed'))
   }
   return resp.json()
 }
@@ -91,7 +109,7 @@ export async function updateRecord(
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'Update failed')
+    throw new Error(extractErrorMessage(err, 'Update failed'))
   }
   return resp.json()
 }
@@ -103,7 +121,7 @@ export async function deleteRecord(siteId: SiteId, recordId: string): Promise<vo
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'Delete failed')
+    throw new Error(extractErrorMessage(err, 'Delete failed'))
   }
 }
 
@@ -140,7 +158,7 @@ export async function getSite(siteId: SiteId): Promise<Record<string, unknown>> 
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'Fetch site failed')
+    throw new Error(extractErrorMessage(err, 'Fetch site failed'))
   }
   return resp.json()
 }
@@ -156,7 +174,7 @@ export async function updateSite(
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'Update site failed')
+    throw new Error(extractErrorMessage(err, 'Update site failed'))
   }
   return resp.json()
 }
@@ -168,7 +186,7 @@ export async function getPdfUrl(siteId: SiteId, recordId: string): Promise<strin
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'Fetch PDF URL failed')
+    throw new Error(extractErrorMessage(err, 'Fetch PDF URL failed'))
   }
   const data = await resp.json()
   return data.url as string
@@ -181,7 +199,7 @@ export async function exportExcel(siteId: SiteId, label: string) {
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || 'Export failed')
+    throw new Error(extractErrorMessage(err, 'Export failed'))
   }
   const blob = await resp.blob()
   const url = URL.createObjectURL(blob)
