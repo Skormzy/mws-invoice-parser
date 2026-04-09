@@ -199,7 +199,7 @@ export default function UploadPage({ onSaveSuccess }: UploadPageProps) {
 
   const handleSave = async (rows: Record<string, unknown>[]) => {
     try {
-      const res = await saveInvoice(invoiceType, rows, fileRef.current)
+      const res = await saveInvoice(invoiceType, rows, result?.storage_path ?? null)
       toast.success(
         `Saved ${res.inserted} record${res.inserted !== 1 ? 's' : ''} to ${SITE_LABELS[invoiceType]}.`
       )

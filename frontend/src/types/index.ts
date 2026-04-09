@@ -254,6 +254,7 @@ export interface ParseResponse {
   rows: Record<string, unknown>[]
   warnings: ValidationWarning[]
   pdf_page_images: string[]
+  storage_path?: string
 }
 
 // Duplicate check response
