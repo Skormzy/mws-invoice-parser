@@ -175,12 +175,15 @@ def parse_cambridge(
     hst_amount: Optional[float] = None
     balance_forward: Optional[float] = None
     late_payment_charge: Optional[float] = None
+    miscellaneous_charges: Optional[float] = None
 
     for idx, line in enumerate(lines):
         ns = line.replace(" ", "")  # no-space version for keyword matching
 
         if "DemandCharge" in ns and ("8,450" in ns or "8450" in ns):
             demand_charge = _last_dollar(line)
+            if demand_charge is None and idx + 1 < len(lines):
+                demand_charge = _last_dollar(lines[idx + 1])
             mc = re.search(r"ofCD\s*([\d,\.]+)\s*m3", line, re.IGNORECASE)
             if mc:
                 cd = float(mc.group(1).replace(",", ""))
@@ -189,9 +192,14 @@ def parse_cambridge(
             "Delivery" in ns and "422" in ns
         ):
             delivery_charge = _last_dollar(line)
+            if delivery_charge is None and idx + 1 < len(lines):
+                delivery_charge = _last_dollar(lines[idx + 1])
 
         elif "MonthlyCharge" in ns and "Interruptible" in ns:
-            monthly_charge_interruptible = _last_dollar(line)
+            val = _last_dollar(line)
+            if val is None and idx + 1 < len(lines):
+                val = _last_dollar(lines[idx + 1])
+            monthly_charge_interruptible = val
 
         elif (
             "GasSupply-Commodity" in ns
@@ -200,7 +208,10 @@ def parse_cambridge(
             and "Price" not in ns
             and "Adjustment" not in ns
         ):
-            gas_supply_commodity = _last_dollar(line)
+            val = _last_dollar(line)
+            if val is None and idx + 1 < len(lines):
+                val = _last_dollar(lines[idx + 1])
+            gas_supply_commodity = val
 
         elif "GasSupply-Transportation" in ns:
             val = _last_dollar(line)
@@ -225,6 +236,9 @@ def parse_cambridge(
         elif "LatePaymentCharge" in ns:
             late_payment_charge = _last_dollar(line)
 
+        elif "MiscellaneousAdjustmentsSubtotal" in ns:
+            miscellaneous_charges = _last_dollar(line)
+
     # Fallback for cost excl HST
     if enbridge_invoice_cost_excl_hst is None:
         for line in lines:
@@ -239,7 +253,6 @@ def parse_cambridge(
         "monthly_charge_interruptible": monthly_charge_interruptible,
         "gas_supply_commodity": gas_supply_commodity,
         "gas_supply_transportation": gas_supply_transportation,
-        "commodity_fuel_price_adjustment": commodity_fuel_price_adjustment,
         "enbridge_invoice_cost_excl_hst": enbridge_invoice_cost_excl_hst,
     }
     for field_name, val in mandatory.items():
@@ -267,7 +280,7 @@ def parse_cambridge(
         gas_supply_commodity=gas_supply_commodity,
         gas_supply_transportation=gas_supply_transportation,
         commodity_fuel_price_adjustment=commodity_fuel_price_adjustment,
-        miscellaneous_charges=None,
+        miscellaneous_charges=miscellaneous_charges,
         enbridge_invoice_cost_excl_hst=enbridge_invoice_cost_excl_hst or 0.0,
         hst_amount=hst_amount,
         balance_forward=balance_forward,
