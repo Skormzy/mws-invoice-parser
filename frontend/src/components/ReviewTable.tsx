@@ -280,7 +280,7 @@ export default function ReviewTable({
                     {rowIdx + 1}
                   </td>
 
-                  {cols.map((col, colIdx) => {
+                  {cols.map((col) => {
                     const bg = cellCls(rowIdx, col.key)
                     const rawVal = row[col.key]
 
