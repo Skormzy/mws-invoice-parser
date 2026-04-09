@@ -101,14 +101,6 @@ export default function ReviewTable({
 
   const rowBg = (rowIdx: number) => (rowIdx % 2 === 0 ? 'bg-white' : 'bg-gray-50')
 
-  // Sticky left offset for frozen cols (row# = 40px, first data frozen col = 40px)
-  const frozenOffset = (colIdx: number): string => {
-    const frozenBefore = cols.slice(0, colIdx).filter((c) => c.frozen).length
-    // row# col = 40px, each frozen data col ≈ 112px (min-w-28)
-    const base = 40 + frozenBefore * 112
-    return `${base}px`
-  }
-
   return (
     <div className="flex flex-col flex-1 min-w-0 bg-white">
       {/* ── Header bar ─────────────────────────────────────────── */}
@@ -175,7 +167,7 @@ export default function ReviewTable({
               {/* Row number — rowSpan=2 when grouped */}
               <th
                 rowSpan={hasGroups ? 2 : 1}
-                className="sticky left-0 top-0 z-30 border-b border-r border-gray-300 bg-blue-800 text-white text-center px-2 py-2 font-semibold w-10 min-w-10 align-bottom"
+                className="border-b border-r border-gray-300 bg-blue-800 text-white text-center px-2 py-2 font-semibold w-10 min-w-10 align-bottom"
               >
                 #
               </th>
@@ -202,11 +194,10 @@ export default function ReviewTable({
                       className={`
                         sticky top-0 border-b border-r border-gray-300 bg-blue-800 text-white
                         px-2 py-2 font-semibold whitespace-nowrap text-xs align-bottom
-                        ${col.frozen ? 'z-30' : 'z-20'}
+                        z-20
                         ${col.rightAlign ? 'text-right' : 'text-left'}
                         ${col.width ?? ''}
                       `}
-                      style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
                     >
                       {col.label}
                       {col.readOnly && (
@@ -222,11 +213,10 @@ export default function ReviewTable({
                     className={`
                       sticky top-0 border-b border-r border-gray-300 bg-blue-800 text-white
                       px-2 py-2 font-semibold whitespace-nowrap text-xs
-                      ${col.frozen ? 'z-30' : 'z-20'}
+                      z-20
                       ${col.rightAlign ? 'text-right' : 'text-left'}
                       ${col.width ?? ''}
                     `}
-                    style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
                   >
                     {col.label}
                     {col.readOnly && (
@@ -285,7 +275,7 @@ export default function ReviewTable({
                 <tr key={rowIdx} className={`${rowBg(rowIdx)} hover:bg-blue-50 transition-colors`}>
                   {/* Sticky row number */}
                   <td
-                    className={`sticky left-0 z-10 border-b border-r border-gray-200 text-center text-gray-400 font-medium px-2 py-1 ${rowBg(rowIdx)}`}
+                    className={`border-b border-r border-gray-200 text-center text-gray-400 font-medium px-2 py-1 ${rowBg(rowIdx)}`}
                   >
                     {rowIdx + 1}
                   </td>
@@ -299,10 +289,8 @@ export default function ReviewTable({
                         key={col.key}
                         className={`
                           border-b border-r border-gray-200 p-0
-                          ${col.frozen ? `sticky z-10 ${rowBg(rowIdx)}` : ''}
                           ${bg}
                         `}
-                        style={col.frozen ? { left: frozenOffset(colIdx) } : undefined}
                       >
                         {col.readOnly ? (
                           <span
