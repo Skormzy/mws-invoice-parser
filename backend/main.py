@@ -237,6 +237,69 @@ async def parse(body: ParseRequest):
     }
 
 
+# ── Parse (base64) ────────────────────────────────────────────
+
+@app.post("/parse-b64")
+async def parse_b64(request: Request):
+    """
+    Parse a PDF invoice sent as base64-encoded JSON.
+    Used by the Supabase Edge Function proxy which cannot produce
+    multipart/form-data that python-multipart can parse.
+
+    JSON body:
+      invoice_type  — cambridge | pickering_cng | walgreen | pickering_elexicon
+      pdf_base64    — base64-encoded PDF bytes
+      filename      — (optional) original filename, default "invoice.pdf"
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {exc}") from exc
+
+    invoice_type: str = body.get("invoice_type", "")
+    pdf_base64: str = body.get("pdf_base64", "")
+    filename: str = body.get("filename", "invoice.pdf")
+
+    if not invoice_type or not pdf_base64:
+        raise HTTPException(status_code=400, detail="invoice_type and pdf_base64 are required")
+    if invoice_type not in _TABLE_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown invoice_type: {invoice_type!r}")
+
+    try:
+        pdf_bytes = base64.b64decode(pdf_base64)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 data: {exc}") from exc
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = tmp.name
+
+    try:
+        rows_pydantic, parse_warnings = _dispatch_parse(invoice_type, tmp_path, filename)
+        row_dicts = [r.model_dump(mode="json") for r in rows_pydantic]
+        page_images = _pdf_to_images(tmp_path)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    from validation import validate_rows
+    val_warnings = validate_rows(invoice_type, row_dicts)
+    all_warnings = [w.model_dump() for w in (parse_warnings + val_warnings)]
+
+    return {
+        "invoice_type": invoice_type,
+        "rows": row_dicts,
+        "warnings": all_warnings,
+        "pdf_page_images": page_images,
+    }
+
+
 # ── Save ──────────────────────────────────────────────────────
 
 @app.post("/save")
