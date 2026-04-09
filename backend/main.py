@@ -23,9 +23,10 @@ from io import BytesIO
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -48,6 +49,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─────────────────────────────────────────────────────────────
+# Exception handlers
+# ─────────────────────────────────────────────────────────────
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """
+    Safely serialize FastAPI validation errors without crashing on binary data
+    (e.g. raw PDF bytes in request body misrouted to a JSON endpoint).
+    """
+    safe_errors = []
+    for error in exc.errors():
+        safe_error: dict[str, Any] = {}
+        for k, v in error.items():
+            if isinstance(v, bytes):
+                safe_error[k] = f"<binary {len(v)} bytes>"
+            elif isinstance(v, (list, tuple)):
+                safe_error[k] = [f"<binary {len(i)} bytes>" if isinstance(i, bytes) else i for i in v]
+            else:
+                safe_error[k] = v
+        safe_errors.append(safe_error)
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
+
 
 # ─────────────────────────────────────────────────────────────
 # Constants
